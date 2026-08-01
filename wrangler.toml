@@ -1,8 +1,14 @@
 name = "v20251104"
-main = "_worker.js"
+main = "_worker_copypaste.js"
 compatibility_date = "2025-11-04"
+# Emit a synchronous close/cleanup when the client disconnects (request.signal). The tracer + upstream
+# cleanup depend on it; for a Dashboard copy-paste deploy set the same flag in the dashboard Compatibility flags.
+compatibility_flags = ["enable_request_signal"]
 keep_vars = true
 
+# No cron triggers: automated background ProxyIP scanning rapidly probes many Cloudflare IPs,
+# which Cloudflare flags as network abuse. ProxyIP scanning is manual-only (admin panel button).
+
 #[[kv_namespaces]]
-#binding = "KV"			#KV绑定名默认不可修改
-#id = ""				#KV数据库id
+#binding = "KV"			#KV binding name; keep this unchanged by default
+#id = ""				#KV namespace id

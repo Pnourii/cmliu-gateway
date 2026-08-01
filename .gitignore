@@ -15,6 +15,9 @@ build/
 *.wasm
 GRAINTCP_*
 
+# Benchmark run output (generated data, not source)
+benchmark-runs/
+
 # Cloudflare Workers
 .wrangler/
 wrangler-install.log
@@ -38,3 +41,19 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 log/
+
+# Stray editor/OS backup copies
+_worker - Copy.js
+* - Copy.*
+
+# 1101 bisection scratch (kept on disk, not tracked)
+reason_new/
+
+# wrangler tail captures (large, local debugging artifacts)
+worker-debug-*.jsonl
+src_static_ui/capture*.json
+src_static_ui/capture2*.json
+src_static_ui/capture3*.json
+src_static_ui/capture4*.json
+src_static_ui/capture5*.json
+src_static_ui/capture6*.json

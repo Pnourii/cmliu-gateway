@@ -1,224 +1,191 @@
-# 🚀 edgetunnel 2.1
-![后台页面](./img.png)
+# edgetunnel
 
-[![Stars](https://img.shields.io/github/stars/cmliu/edgetunnel?style=flat-square&logo=github)](https://github.com/cmliu/edgetunnel/stargazers)
-[![Forks](https://img.shields.io/github/forks/cmliu/edgetunnel?style=flat-square&logo=github)](https://github.com/cmliu/edgetunnel/network/members)
-[![License](https://img.shields.io/github/license/cmliu/edgetunnel?style=flat-square)](https://github.com/cmliu/edgetunnel/blob/main/LICENSE)
-[![Telegram](https://img.shields.io/badge/Telegram-Group-blue?style=flat-square&logo=telegram)](https://t.me/CMLiussss)
-[![YouTube](https://img.shields.io/badge/YouTube-Channel-red?style=flat-square&logo=youtube)](https://www.youtube.com/watch?v=LeT4jQUh8ok)
-[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat-square&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/cmliu/edgetunnel)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/cmliu/edgetunnel)
+This repository contains a Cloudflare Worker / Pages deployment with an admin panel, subscription generation, and configurable transport settings.
 
----
+> **Attribution.** This is a heavily modified fork of [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel),
+> which is itself derived from the upstream edgetunnel/zizifn worker lineage. Licensed under **GPL-2.0**,
+> same as upstream — see [LICENSE](LICENSE). The data plane, build pipeline, admin panel, test suite and
+> documentation here have diverged substantially from upstream; it is not drop-in compatible.
 
-## 📖 项目简介
+> **No credentials are stored in this repository.** `ADMIN`, `KEY`, `UUID` and `PATH` are supplied at
+> runtime as Cloudflare environment variables. Never commit them. Example hostnames in the docs and tests
+> (`example.com`) are placeholders, not real deployments.
 
-**edgetunnel** 是一个基于 CF Workers/Pages 平台的边缘计算隧道解密方案。它能够高效地处理网络流量，并提供强大的管理面板和灵活的节点配置能力。
+## Quick Start
 
-- 🖥️ **Demo 演示站点**：[https://EDT-Pages.github.io/admin](https://EDT-Pages.github.io/admin)
+1. Create a Cloudflare Worker or Pages project.
+2. Set an `ADMIN` environment variable. This is the admin panel password.
+3. Bind a KV namespace using the binding name `KV`.
+4. Deploy `_worker_copypaste.js` (Dashboard copy-paste) or `wrangler_deploy_method_worker/_worker.js` (Wrangler).
+5. Open `/admin` on your deployed domain and sign in with the admin password.
 
-### ✨ 核心特性
+## Source And Build
 
-- 🛡️ **协议支持**：支持 VLESS、Trojan、Shadowsocks 等主流协议，深度集成加密传输。
-- 📊 **管理面板**：内置可视化后台，支持实时配置修改、日志查看及流量统计。
-- 🛠️ **部署灵活**：完整适配 CF Workers 及 CF Pages (GitHub / 上传)。
-- 🔄 **订阅系统**：内置自动订阅生成及混淆转换，适配主流客户端（Clash, Sing-box, Surge 等）。
-- ⚡ **性能加速**：支持自定义 ProxyIP、SOCKS5/HTTP 链式代理及优选 API，优化网络延迟。
-- 🌐 **多台适配**：完美适配 Windows, Android, iOS, MacOS 及各种软路由固件。
+`src/worker.js` is the source of truth. `npm run build` generates two deployable builds from it:
 
----
+- **`_worker_copypaste.js`** — for Dashboard "Edit Code" copy-paste. Uses `request.fetcher.connect` for outbound TCP.
+- **`wrangler_deploy_method_worker/_worker.js`** — for `wrangler deploy`. Uses the documented `connect()` from `cloudflare:sockets`.
 
-## 💡 快速部署
->[!TIP]
-> 📖 **详尽图文教程**：[edgetunnel 部署指南](https://cmliussss.com/p/edt2/)
+The two builds are identical except for that outbound-TCP mechanism. Do **not** paste the Wrangler build into the Dashboard — its `cloudflare:sockets` import causes Error 1101 there; use `_worker_copypaste.js` for copy-paste instead.
 
->[!WARNING]
-> ⚠️ **Error 1101问题**：[视频解析](https://www.youtube.com/watch?v=r4uVTEJptdE)
+```bash
+npm run build
+npm run verify-generated
+npm test
+npm run check
+npm run bench:live -- --help
+npm run bench:https -- --help
+npm run bench:matrix -- --help
+npm run bench:suite -- --help
+npm run bench:analyze -- --help
+npm run bench:compare -- --help
+```
 
-### ⚙️ Workers 部署
+Edit user-facing static defaults in `src/core/config.js`, then run `npm run build`.
 
-<details>
-<summary><code><strong>「 Workers 部署文字教程 」</strong></code></summary>
+## Worker Deployment
 
-1. 部署 CF Worker：
-   - 在 CF Worker 控制台中创建一个新的 Worker。
-   - 将 [worker.js](https://github.com/cmliu/edgetunnel/blob/main/_worker.js) 的内容粘贴到 Worker 编辑器中。
-   - 在左侧的 `设置`选项卡中，选择 `变量` > `添加变量`。
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存`即可。
+1. Create a new Cloudflare Worker.
+2. For Dashboard copy-paste, paste the contents of `_worker_copypaste.js` into the Worker editor. For Wrangler, run `wrangler deploy -c wrangler_deploy_method_worker/wrangler.toml`.
+3. Add the `ADMIN` environment variable.
+4. Add a KV namespace binding named `KV`.
+5. Optional: add a custom domain from the Worker triggers page.
 
-2. 绑定 KV 命名空间：
-   - 在 `绑定`选项卡中选择 `添加绑定 +` > `KV 命名空间` > `添加绑定`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `添加绑定`即可。
+## Pages Deployment
 
-3. 给 Workers绑定 自定义域： 
-   - 在 workers控制台的 `触发器`选项卡，下方点击 `添加自定义域`。
-   - 填入你已转入 CF 域名解析服务的次级域名，例如:`vless.google.com`后 点击`添加自定义域`，等待证书生效即可。
+1. Create a Cloudflare Pages project.
+2. Upload the project files or connect this repository.
+3. Add the `ADMIN` environment variable for production.
+4. Add a KV namespace binding named `KV`.
+5. Redeploy after setting the environment variables and bindings.
 
-4. 访问后台：
-   - 访问 `https://vless.google.com/admin` 输入管理员密码即可登录后台。
+## Environment Variables
 
-</details>
+| Name | Required | Example | Description |
+| --- | --- | --- | --- |
+| `ADMIN` | Yes | `change-me` | Password for the admin panel. |
+| `KEY` | No | `quick-link-key` | Optional quick subscription path key. |
+| `UUID` | No | `90cd4a77-141a-43c9-991b-08263cfe9c10` | Optional fixed UUID. Must be UUID v4. |
+| `HOST` | No | `example.com` | Optional explicit host list for generated links. |
+| `PROXYIP` | No | `proxy.example.com:443` | Optional proxy endpoint. |
+| `URL` | No | `https://example.com` | Optional fallback home page URL. |
+| `GO2SOCKS5` | No | `*.example.com` | Optional list of host patterns routed through SOCKS5. |
+| `DEBUG` | No | `1` | Enables debug logging when set to `1` or `true`. |
+| `ENABLE_KV_LOG` | No | `1` | Opts in to KV request log writes. Disabled by default to protect KV free-tier write quota. |
+| `OFF_LOG` | No | `1` | Legacy force-disable for KV request log writes. Takes priority over `ENABLE_KV_LOG`. |
+| `LOG_TTL_DAYS` | No | `7` | Number of days to retain append-only KV request log entries. Clamped from 1 to 30 days. |
+| `LOG_READ_LIMIT` | No | `500` | Maximum number of recent request logs returned by `/admin/log.json`. Clamped from 1 to 1000. |
+| `ENABLE_KV_PROXY_CACHE` | No | `1` | Persistent KV proxy-resolution cache. On by default; writes are globally throttled and TTL'd so they cannot exhaust the free-plan KV write quota or drop connections. Set to `0` to disable. |
+| `OFF_PROXY_CACHE` | No | `1` | Force-disables the persistent KV proxy-resolution cache (the in-memory cache stays on). |
+| `BEST_SUB` | No | `1` | Enables preferred subscription generator mode when set to `1` or `true`. |
+| `PRELOAD_RACE_DIAL` | No | `1` | Enables preload race dialing when set to `1` or `true`. |
+| `CONNECT_TIMEOUT_MS` | No | `850` | Optional outbound connect timeout. Values are clamped from `400` to `5000` ms. |
+| `DNS_TIMEOUT_MS` | No | `1200` | Optional DNS-over-TCP response timeout. Falls back to `CONNECT_TIMEOUT_MS` when set, otherwise `1200` ms. Values are clamped from `400` to `5000` ms. |
+| `DIAL_STAGGER_MS` | No | `90` | Optional stagger between clean-IP/proxy candidate dials. Defaults to `90` ms and is clamped from `0` to `500` ms. |
+| `DNS_SERVER` | No | `1.1.1.1:53` | Optional TCP DNS upstream for tunneled UDP DNS requests. Defaults to `8.8.4.4:53`. |
+| `DOH_URL` | No | `https://dns.google/dns-query` | Optional DoH endpoint for preload race dialing and proxy-domain resolution. Defaults to Cloudflare DoH. |
+| `FORCE_PROXY_HOSTS` | No | none | Optional comma/newline list of target host patterns that should skip direct dialing and go straight through ProxyIP or the configured chain proxy. Useful for Cloudflare-hosted panel/custom domains that return 5xx when reached from a Worker egress path. Unset by default. |
 
-### 🛠 Pages 上传 部署方法 **最佳推荐!!!** [图文教程](https://cmliussss.com/p/edt2/)
+## Admin Panel
 
-<details>
-<summary><code><strong>「 Pages 上传文件部署文字教程 」</strong></code></summary>
+Open:
 
-1. 部署 CF Pages：
-   - 下载 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件，并点上 Star !!!
-   - 在 CF Pages 控制台中选择 `上传资产`后，为你的项目取名后点击 `创建项目`，然后上传你下载好的 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件后点击 `部署站点`。
-   - 部署完成后点击 `继续处理站点` 后，选择 `设置` > `环境变量` > **制作**为生产环境定义变量 > `添加变量`。
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存`即可。
-   - 返回 `部署` 选项卡，在右下角点击 `创建新部署` 后，重新上传 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件后点击 `保存并部署` 即可。
+```text
+https://your-domain.example/admin
+```
 
-2. 绑定 KV 命名空间：
-   - 在 `设置`选项卡中选择 `绑定` > `+ 添加` > `KV 命名空间`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `保存`后重试部署即可。
+Use the `ADMIN` password to sign in. The panel can update runtime configuration, view logs, and generate subscription links.
 
-3. 给 Pages绑定 CNAME自定义域：[视频教程](https://www.youtube.com/watch?v=LeT4jQUh8ok&t=851s)
-   - 在 Pages控制台的 `自定义域`选项卡，下方点击 `设置自定义域`。
-   - 填入你的自定义次级域名，注意不要使用你的根域名，例如：
-     您分配到的域名是 `fuck.cloudns.biz`，则添加自定义域填入 `lizi.fuck.cloudns.biz`即可；
-   - 按照 CF 的要求将返回你的域名DNS服务商，添加 该自定义域 `lizi`的 CNAME记录 `edgetunnel.pages.dev` 后，点击 `激活域`即可。
-   
-4. 访问后台：
-   - 访问 `https://lizi.fuck.cloudns.biz/admin` 输入管理员密码即可登录后台。
+## Notes
 
-</details>
+- Keep the KV binding name as `KV`.
+- Use a UUID v4 value when setting `UUID`.
+- Redeploy after changing production environment variables.
+- The generated subscription host defaults to the current deployed hostname unless `HOST` is explicitly configured.
+- Proxy endpoint resolution uses a bounded memory cache plus a persistent last-known-good KV cache (on by default). KV writes are globally throttled (at most one every few minutes per isolate) and expire via TTL, so active browsing cannot exhaust the free-plan KV write quota; a write failure is always swallowed and never drops a connection. Set `OFF_PROXY_CACHE=1` or `ENABLE_KV_PROXY_CACHE=0` to keep it memory-only.
+- Request logging is off by default to avoid exhausting Cloudflare's free-tier KV write quota during subscription traffic. Set `ENABLE_KV_LOG=1` to store append-only KV entries under `log:entry:`; existing legacy `log.json` data is still readable as a fallback when no append-only entries exist.
+- `PRELOAD_RACE_DIAL=1` can improve first-open latency when DoH is fast and nearby, but it adds a DoH lookup before dialing each new hostname. Leave it off on networks where DoH is slow or blocked.
+- TCP outbound dialing uses `request.fetcher.connect` in the copy-paste build (`_worker_copypaste.js`) and the documented `connect()` from `cloudflare:sockets` in the Wrangler build (`wrangler_deploy_method_worker/_worker.js`). The Dashboard editor mishandles the `cloudflare:sockets` import (Error 1101), so the sockets build must be deployed with Wrangler only.
+- Tunnel targets are validated before dialing (`validateTunnelTarget`): SMTP port 25, localhost, and private/loopback/link-local IPv4 & IPv6 ranges are rejected to reduce SSRF/abuse surface.
+- gRPC flush timing should be tuned only from measurements. Use `node scripts/grpc-live-smoke-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid` to smoke-test a deployed gRPC endpoint before changing batching constants.
+- Use `node scripts/live-tunnel-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports all --runs 5` to compare deployed WS, gRPC, and XHTTP first-byte latency, total time, and success rate before tuning speed-related defaults.
 
-### 🛠 Pages + GitHub 部署方法
+## Post-Deploy Benchmark Runbook
 
-<details>
-<summary><code><strong>「 Pages + GitHub 部署文字教程 」</strong></code></summary>
+Run benchmarks only against the deployed Worker or custom domain you actually use. For gRPC, a custom domain is usually required. `--url`, `--sni`, and `--authority` should normally be the Worker/custom domain identity, while `--front-host` is the clean/front domain being tested.
 
-1. 部署 CF Pages：
-   - 在 Github 上先 Fork 本项目，并点上 Star !!!
-   - 在 CF Pages 控制台中选择 `连接到 Git`后，选中 `edgetunnel`项目后点击 `开始设置`。
-   - 在 `设置构建和部署`页面下方，选择 `环境变量（高级）`后并 `添加变量`
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存并部署`即可。
+Full baseline suite:
 
-2. 绑定 KV 命名空间：
-   - 在 `设置`选项卡中选择 `绑定` > `+ 添加` > `KV 命名空间`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `保存`后重试部署即可。
+```bash
+node scripts/run-benchmark-suite.mjs --url https://your-domain.example/ --uuid your-vless-uuid --front-hosts sourceforge.net,www.modrinth.com,www.speedtest.net --sni your-domain.example --authority your-domain.example --bench-target your-benchmark-target.example --out-dir benchmark-runs --prefix baseline
+```
 
-3. 给 Pages绑定 CNAME自定义域：[视频教程](https://www.youtube.com/watch?v=LeT4jQUh8ok&t=851s)
-   - 在 Pages控制台的 `自定义域`选项卡，下方点击 `设置自定义域`。
-   - 填入你的自定义次级域名，注意不要使用你的根域名，例如：
-     您分配到的域名是 `fuck.cloudns.biz`，则添加自定义域填入 `lizi.fuck.cloudns.biz`即可；
-   - 按照 CF 的要求将返回你的域名DNS服务商，添加 该自定义域 `lizi`的 CNAME记录 `edgetunnel.pages.dev` 后，点击 `激活域`即可。
+This writes separate reports for latency/burst and HTTPS, and includes download/upload runs when `--bench-target` is provided.
 
-4. 访问后台：
-   - 访问 `https://lizi.fuck.cloudns.biz/admin` 输入管理员密码即可登录后台。
+Latency and front-host stability:
 
-</details>
+```bash
+node scripts/live-tunnel-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --runs 30 --front-host sourceforge.net --sni your-domain.example --authority your-domain.example --service-name / --target neverssl.com --port 80 --profile latency
+```
 
----
+Burst behavior for Telegram/reel-style request fan-out:
 
-## 🔑 环境变量说明
+```bash
+node scripts/live-tunnel-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --runs 24 --concurrency 6 --front-host sourceforge.net --sni your-domain.example --authority your-domain.example --service-name / --target neverssl.com --port 80 --profile burst
+```
 
-| 变量名 | 必填 | 示例 | 详细备注 |
-| :--- | :---: | :--- | :--- |
-| **ADMIN** | ✅ | `123456` | 后台管理面板登录密码 |
-| **KEY** | ❌ | `CMLiussss` | 快速订阅路径密钥，访问 `/CMLiussss` 即可快速获取节点 |
-| **UUID** | ❌ | `90cd4a77-141a-43c9-991b-08263cfe9c10` | 强制固定UUID，只支持**UUIDv4**标准格式 |
-| **PROXYIP** | ❌ | `proxyip.cmliussss.net:443` | 全局自定义反代 IP  |
-| **URL** | ❌ | `https://cloudflare-error-page-3th.pages.dev` | 默认主页伪装地址（可填写网页 URL 或 `1101`） |
-| **GO2SOCKS5** | ❌ | `blog.cmliussss.com`,`*.ip111.cn`,`*google.com` | 强制走 SOCKS5 的名单 (`*` 为全局，域名用逗号分隔) |
-| **DEBUG** | ❌ | `1`或`true` | **开发者模式**，默认**关闭**调试日志功能（console.log），设置`1`或`true`则**开启**调试日志功能 |
-| **OFF_LOG** | ❌ | `1`或`true` | 默认**开启**KV日志记录功能，设置`1`或`true`则**关闭**日志记录功能 |
-| **BEST_SUB** | ❌ | `1`或`true` | 默认**关闭**作为**优选订阅生成器**的功能，设置`1`或`true`则**开启**该功能 |
-| **PRELOAD_RACE_DIAL** | ❌ | `1`或`true` | 默认**关闭**作为**预加载竞速拨号**的功能，设置`1`或`true`则**开启**该功能 |
-| **TCP_CONCURRENT_DIAL**   | ❌ | `2` | **TCP 并发拨号数**，默认值为`2`；设置后不再根据中国移动网络自动降为单路 |
-| **PROXY_CONCURRENT_DIAL** | ❌ | `1` | **反代并发拨号数**，默认值为`1`；数值越高连接速度越快，但 IP 切换也越频繁 |
+Real HTTPS browsing behavior:
 
----
+```bash
+node scripts/live-https-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --runs 10 --front-host sourceforge.net --sni your-domain.example --authority your-domain.example --service-name / --target example.com --port 443 --path /
+```
 
-## 🔧 高级实用技巧
-如需修改 **订阅地址里的TOKEN** 和 **用于节点验证的UUID** ，可通过修改变量
-1. 修改`ADMIN`或`KEY`变量的值，可以随机修改 **订阅地址里的TOKEN** 和 **用于节点验证的UUID**
-2. 设置`UUID`变量可以强制固定 **订阅地址里的TOKEN** 和 **用于节点验证的UUID**，注意必须是**UUIDv4**标准格式，否则会导致节点无法使用。
+This performs an inner TLS handshake through the gRPC tunnel and reports `tlsP50Ms` / `tlsP95Ms` in addition to first-byte and total time.
 
-本工具支持通过 **PATH路径** 动态切换底层代理方案：
+To compare several front hosts with the same settings and save a baseline report:
 
-- 指定 `PROXYIP` 案例
-   ```url
-   /proxyip=proxyip.cmliussss.net
-   /?proxyip=proxyip.cmliussss.net
-   ```
+```bash
+node scripts/live-benchmark-matrix.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --front-hosts sourceforge.net,www.modrinth.com,www.speedtest.net --profiles latency,burst --runs 30 --sni your-domain.example --authority your-domain.example --service-name / --target neverssl.com --port 80 --out benchmark-baseline.json
+```
 
-- 指定 `SOCKS5` 案例
-   ```url
-   /socks5=user:password@127.0.0.1:1080
-   /?socks5=user:password@127.0.0.1:1080
-   /socks://dXNlcjpwYXNzd29yZA==@127.0.0.1:1080 (默认激活全局SOCKS5)
-   /socks5://user:password@127.0.0.1:1080 (默认激活全局SOCKS5)
-   ```
+For real HTTPS front-host comparison, run a separate matrix with an HTTPS target and port `443`:
 
-- 指定 `HTTP代理` 案例
-   ```url
-   /http=user:password@127.0.0.1:1080
-   /http://user:password@127.0.0.1:8080 (默认激活全局SOCKS5)
-   ```
+```bash
+node scripts/live-benchmark-matrix.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --front-hosts sourceforge.net,www.modrinth.com,www.speedtest.net --profiles https --runs 10 --sni your-domain.example --authority your-domain.example --service-name / --target example.com --port 443 --out benchmark-https-baseline.json
+```
 
-- 指定 `Trojan fallback` 案例（由于使用场景为自建对接, 仅 Trojan 入站，fallback 服务需为同密码、非 WebSocket、非 TLS. 此时 UDP 透传给 fallback, 性能优秀, 功能完整）
-   ```url
-   /trojan=1.1.1.1:1234
-   ```
+Analyze a saved benchmark report before tuning:
 
----
+```bash
+node scripts/analyze-benchmark-report.mjs benchmark-baseline.json --min-runs 10
+```
 
-## 💻 客户端适配情况
+After changing one tuning knob, run the same matrix again with a new output file and compare:
 
-| 平台 | 推荐客户端 |
-| :--- | :--- |
-| **Windows** | [v2rayN](https://github.com/2dust/v2rayN/releases)、[Hiddify](https://github.com/hiddify/hiddify-app/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[mihomo-party](https://github.com/mihomo-party-org/clash-party/releases)、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Clashmi](https://github.com/KaringX/clashmi/releases)、[FlyClash](https://github.com/GtxFury/FlyClash/releases)、[Karing](https://github.com/KaringX/karing/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) |
-| **Android** | [v2rayNG](https://github.com/2dust/v2rayNG/releases)、[ClashMetaForAndroid](https://github.com/MetaCubeX/ClashMetaForAndroid/releases/)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Clashmi](https://github.com/KaringX/clashmi/releases)、[Hiddify](https://github.com/hiddify/hiddify-app/releases)、[NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid/releases)、[FlyClash](https://github.com/GtxFury/FlyClash/releases)、[Karing](https://github.com/KaringX/karing/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) |
-| **iOS** | Surge、Shadowrocket、Stash、[Hiddify](https://github.com/hiddify/hiddify-app/releases)、Loon、Egern、[Clashmi](https://clashmi.app/download)、[Karing](https://karing.app/)、Quantumult X |
-| **macOS** | [FlClash](https://github.com/chen08209/FlClash/releases)、[mihomo-party](https://github.com/mihomo-party-org/clash-party/releases)、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、Surge、[Clashmi](https://clashmi.app/download)、[Karing](https://karing.app/)、[FlyClash](https://github.com/GtxFury/FlyClash/releases) |
-| **鸿蒙** | [ClashBox](https://github.com/xiaobaigroup/ClashBox/releases) |
----
+```bash
+node scripts/compare-benchmark-reports.mjs --baseline benchmark-baseline.json --candidate benchmark-candidate.json
+```
 
-## ⭐ 项目热度
+Download and upload profiles need a plain HTTP endpoint that serves or accepts the requested payload. The current script sends inner plain HTTP through the tunnel; `--port 80` is the inner destination port, not the outer Worker HTTPS port.
 
-![Stargazers over time](https://github.com/cmliu/cmliu/blob/main/star/edgetunnel.svg)
+For cleaner throughput measurements, deploy the optional benchmark target Worker in `benchmarks/` and use its hostname as `--target`.
 
----
+```bash
+node scripts/live-tunnel-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --runs 10 --front-host sourceforge.net --sni your-domain.example --authority your-domain.example --service-name / --target speedtest.tele2.net --port 80 --http-path /1MB.zip --profile download --timeout 30000
+node scripts/live-tunnel-benchmark.mjs --url https://your-domain.example/ --uuid your-vless-uuid --transports grpc --runs 10 --front-host sourceforge.net --sni your-domain.example --authority your-domain.example --service-name / --target httpbin.org --port 80 --http-method POST --body-bytes 1048576 --profile upload --timeout 30000
+```
 
-## 🙏 特别鸣谢
-### 💖 赞助支持 - 提供云服务器维持[订阅转换服务](https://sub.cmliussss.net/)
-- [Yuusei Network](https://yuusei.io/)
-- [VMRack](https://www.vmrack.net?ref_code=5Zk7eNhbgL7)
+Interpret the result this way:
 
-### 🛠 开源代码引用
-- [zizifn/edgetunnel](https://github.com/zizifn/edgetunnel)
-- [3Kmfi6HP/EDtunnel](https://github.com/6Kmfi6HP/EDtunnel)
-- [SHIJS1999/cloudflare-worker-vless-ip](https://github.com/SHIJS1999/cloudflare-worker-vless-ip)
-- [Stanley-baby](https://github.com/Stanley-baby)
-- [ACL4SSR](https://github.com/ACL4SSR/ACL4SSR/tree/master/Clash/config)
-- [股神](https://t.me/CF_NAT/38889)
-- [Workers/Pages Metrics](https://t.me/zhetengsha/3382)
-- [白嫖哥](https://t.me/bestcfipas)
-- [Mingyu](https://github.com/ymyuuu/workers-vless)
-- [ToiCF/CF-Workers-HTTPS](https://github.com/ToiCF/CF-Workers-HTTPS)
-- [ToiCF/CF-Workers-TURN](https://github.com/ToiCF/CF-Workers-TURN)
-- [ToiCF/CF-Workers-SoftEther](https://github.com/ToiCF/CF-Workers-SoftEther)
-- [eooce](https://github.com/eooce/Cloudflare-proxy)
-- [Sukka](https://ip.skk.moe/)
-- [zhangtaile](https://github.com/cmliu/edgetunnel/pull/999)
-- [1345695](https://github.com/1345695/edcloudwasm)
-- [ToiCF/GrainTCP](https://github.com/ToiCF/GrainTCP)
-- [xream](https://github.com/cmliu/edgetunnel/pull/1359)
+- `acceptRate` proves the Worker accepted and decoded the tunnel protocol.
+- `successRate` proves the inner HTTP response looked valid.
+- `firstByteP50Ms` and `firstByteP95Ms` show instant-open latency and jitter.
+- `totalP50Ms` and `totalP95Ms` show completion time for the chosen payload.
+- `throughputP50Mbps` is useful only for download/upload profiles with meaningful payload sizes.
+- Do not tune `DIAL_STAGGER_MS`, DNS preload, queue limits, or gRPC flush settings from a single small-response latency run.
+- Treat analyzer `FAIL` signals as blockers for speed tuning. Fix reliability, target selection, or front-host choice first.
+- Treat comparator failures as rollback signals unless the failed metric is unrelated to the knob being tested and you intentionally accept that tradeoff.
 
----
+## Disclaimer
 
-## ⚠️ 免责声明
-
-1. 本项目（"edgetunnel"）仅供**教育、科学研究及个人安全测试**之目的。
-2. 使用者在下载或使用本项目代码时，必须严格遵守所在地区的法律法规。
-3. 作者 **cmliu** 对任何滥用本项目代码导致的行为或后果均不承担任何责任。
-4. 本项目不对因使用代码引起的任何直接或间接损害负责。
-5. 建议在测试完成后 24 小时内删除本项目相关部署。
-
----
-
-**如果您觉得项目对您有帮助，请给一个 Star 🌟，这是对我最大的鼓励！**
+Use this project only where you have permission and where your use complies with applicable laws, Cloudflare terms, and network policies. You are responsible for your deployment and configuration.

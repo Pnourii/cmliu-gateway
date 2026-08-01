@@ -1,0 +1,2421 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+
+globalThis.WebSocket = globalThis.WebSocket || { OPEN: 1, CLOSING: 2, CLOSED: 3 };
+globalThis.WebSocketPair = globalThis.WebSocketPair || class WebSocketPair {
+	constructor() {
+		const makeSocket = () => ({
+			readyState: WebSocket.OPEN,
+			binaryType: 'arraybuffer',
+			accept() {},
+			send() {},
+			close() { this.readyState = WebSocket.CLOSED; },
+			addEventListener() {},
+			removeEventListener() {},
+		});
+		return [makeSocket(), makeSocket()];
+	}
+};
+const NativeResponse = globalThis.Response;
+globalThis.Response = class TestResponse extends NativeResponse {
+	constructor(body, init) {
+		if (init?.status === 101) {
+			super(body, { ...init, status: 200 });
+			Object.defineProperty(this, 'status', { value: 101, writable: false });
+		} else {
+			super(body, init);
+		}
+	}
+};
+
+const workerModule = await import('../_worker_copypaste.js');
+const helpers = workerModule.__testPerformanceHelpers;
+
+const {
+	createTunnelContext,
+	applyProxyParamsToTunnelContext,
+	getDialStaggerMs,
+	getProxyResolutionRecord,
+	fetchWithTimeout,
+	openStaggeredCandidates,
+	connectStreams,
+	forwardataudp,
+	dnsAnswerMinTtlMs,
+	socks5Connect,
+	httpConnect,
+	httpsConnect,
+	handleGrpcRequest,
+	encodeGrpcDataFrame,
+	encodeGrpcFramePrefix,
+	parseGrpcFrameChunk,
+	unwrapGrpcMessagePayloads,
+	getSubscriptionRequestOptions,
+	finalizeSubscriptionContent,
+	getTransportConfig,
+	getTransportPathParamValue,
+	readConfigJson,
+	getDohLookupUrl,
+	getDnsTcpEndpoint,
+	translateHTMLVisibleText,
+	injectEnglishRuntimeTranslator,
+	normalizeEnglishStaticPageCachePath,
+	buildRequestLogEntryKey,
+	readRequestLogs,
+	recordRequestLog,
+	writeRequestLogEntry,
+	isSpeedTestSite,
+	matchesHostPattern,
+	patchSingboxSubscription,
+	patchClashSubscription,
+	patchSurgeSubscription,
+	readGrpcFrameLength,
+	expandPreferredEndpointVariants,
+	createUploadQueue,
+	traceUplink,
+	traceDownlink,
+	traceFirstByte,
+	traceClose,
+	classifyClose,
+	isStreamCancellation,
+	updateTraceRatePeaks,
+	formatByteCount,
+	getUplinkWriteTimeoutMs,
+	getDirectFirstByteTimeoutMs,
+	getProxyFirstByteTimeoutMs,
+	isReplayableTlsFirstPacket,
+	normalizeConfigHost,
+	splitConfigArray,
+	base64SecretEncode,
+	base64SecretDecode,
+} = helpers;
+
+function fakeRequest({ colo = 'SJC', asn = 13335, asOrganization = 'Cloudflare' } = {}) {
+	return {
+		cf: { colo, asn, asOrganization },
+		headers: {
+			get(name) {
+				if (String(name).toLowerCase() === 'cf-connecting-ip') return '203.0.113.10';
+				return null;
+			},
+		},
+	};
+}
+
+function withTestTimeout(promise, timeoutMs, label) {
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => setTimeout(() => reject(new Error(`test harness timeout: ${label}`)), timeoutMs)),
+	]);
+}
+
+async function waitForCondition(predicate, timeoutMs, label) {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (predicate()) return;
+		await new Promise(resolve => setTimeout(resolve, 5));
+	}
+	throw new Error(`test harness timeout: ${label}`);
+}
+
+async function collectReadableStream(stream, timeoutMs = 1_000) {
+	const reader = stream.getReader();
+	const chunks = [];
+	try {
+		while (true) {
+			const { done, value } = await withTestTimeout(reader.read(), timeoutMs, 'collect readable stream');
+			if (done) break;
+			if (value) chunks.push(new Uint8Array(value));
+		}
+	} finally {
+		try { reader.releaseLock(); } catch {}
+	}
+	const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
+}
+
+function uuidBytes(uuid) {
+	return new Uint8Array(uuid.replace(/-/g, '').match(/../g).map(hex => parseInt(hex, 16)));
+}
+
+function md5Hex(value) {
+	return createHash('md5').update(String(value)).digest('hex').toLowerCase();
+}
+
+function md5md5(value) {
+	return md5Hex(md5Hex(value).slice(7, 27));
+}
+
+function makeVlessTcpRequest(uuid, hostname = 'target.example', port = 443, rawData = new Uint8Array(0)) {
+	const hostBytes = new TextEncoder().encode(hostname);
+	const out = new Uint8Array(1 + 16 + 1 + 1 + 2 + 1 + 1 + hostBytes.byteLength + rawData.byteLength);
+	let offset = 0;
+	out[offset++] = 0;
+	out.set(uuidBytes(uuid), offset);
+	offset += 16;
+	out[offset++] = 0;
+	out[offset++] = 1;
+	out[offset++] = (port >> 8) & 0xff;
+	out[offset++] = port & 0xff;
+	out[offset++] = 2;
+	out[offset++] = hostBytes.byteLength;
+	out.set(hostBytes, offset);
+	offset += hostBytes.byteLength;
+	out.set(rawData, offset);
+	return out;
+}
+
+function makeVlessUdpDnsRequest(uuid, rawData = new Uint8Array(0)) {
+	const hostname = 'dns.example';
+	const hostBytes = new TextEncoder().encode(hostname);
+	const out = new Uint8Array(1 + 16 + 1 + 1 + 2 + 1 + 1 + hostBytes.byteLength + rawData.byteLength);
+	let offset = 0;
+	out[offset++] = 0;
+	out.set(uuidBytes(uuid), offset);
+	offset += 16;
+	out[offset++] = 0;
+	out[offset++] = 2;
+	out[offset++] = 0;
+	out[offset++] = 53;
+	out[offset++] = 2;
+	out[offset++] = hostBytes.byteLength;
+	out.set(hostBytes, offset);
+	offset += hostBytes.byteLength;
+	out.set(rawData, offset);
+	return out;
+}
+
+function makeHangingProxySocket({ opened = Promise.resolve(), readableCancel = () => {} } = {}) {
+	let closed = false;
+	const socket = {
+		opened,
+		readable: new ReadableStream({
+			cancel(reason) {
+				readableCancel(reason);
+			},
+		}),
+		writable: new WritableStream({
+			write() {},
+		}),
+		closed: new Promise(() => {}),
+		close() {
+			closed = true;
+		},
+		get closedFlag() {
+			return closed;
+		},
+	};
+	return socket;
+}
+
+function makeFakeKV(initialEntries = {}, options = {}) {
+	const store = new Map(Object.entries(initialEntries));
+	const puts = [];
+	return {
+		puts,
+		store,
+		async get(key) {
+			const delayMs = options.getDelays?.[key] || 0;
+			if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+			return store.has(key) ? store.get(key) : null;
+		},
+		async put(key, value, options) {
+			puts.push({ key, value, options });
+			store.set(key, value);
+		},
+		async list({ prefix = '', limit = 1000, cursor } = {}) {
+			const offset = cursor ? Number(cursor) : 0;
+			const names = [...store.keys()].filter(key => key.startsWith(prefix)).sort();
+			const page = names.slice(offset, offset + limit);
+			const nextOffset = offset + page.length;
+			return {
+				keys: page.map(name => ({ name })),
+				list_complete: nextOffset >= names.length,
+				cursor: nextOffset >= names.length ? undefined : String(nextOffset),
+			};
+		},
+	};
+}
+
+{
+	const first = encodeGrpcDataFrame(new Uint8Array([1, 2, 3]));
+	const second = encodeGrpcDataFrame(new Uint8Array([4, 5]));
+	const combined = new Uint8Array(first.byteLength + second.byteLength);
+	combined.set(first, 0);
+	combined.set(second, first.byteLength);
+	const parsed = parseGrpcFrameChunk(new Uint8Array(0), combined);
+	assert.deepEqual(parsed.payloads, [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])]);
+	assert.equal(parsed.pending.byteLength, 0);
+}
+
+{
+	const message = new Uint8Array([0x0a, 0x01, 0xaa, 0x0a, 0x02, 0xbb, 0xcc]);
+	const frame = new Uint8Array(5 + message.byteLength);
+	frame[0] = 0;
+	frame[4] = message.byteLength;
+	frame.set(message, 5);
+	const parsed = parseGrpcFrameChunk(new Uint8Array(0), frame);
+	assert.deepEqual(parsed.payloads, [new Uint8Array([0xaa]), new Uint8Array([0xbb, 0xcc])], 'multi-mode protobuf messages should yield each bytes field as a separate payload');
+}
+
+{
+	const frame = encodeGrpcDataFrame(new Uint8Array([9, 8, 7, 6]));
+	const firstHalf = parseGrpcFrameChunk(new Uint8Array(0), frame.subarray(0, 4));
+	assert.equal(firstHalf.payloads.length, 0);
+	assert.equal(firstHalf.pending.byteLength, 4);
+	const secondHalf = parseGrpcFrameChunk(firstHalf.pending, frame.subarray(4));
+	assert.deepEqual(secondHalf.payloads, [new Uint8Array([9, 8, 7, 6])]);
+	assert.equal(secondHalf.pending.byteLength, 0);
+}
+
+{
+	const emptyFrame = new Uint8Array([0, 0, 0, 0, 0]);
+	const parsed = parseGrpcFrameChunk(new Uint8Array(0), emptyFrame);
+	assert.deepEqual(parsed.payloads, []);
+	assert.equal(parsed.pending.byteLength, 0);
+}
+
+{
+	assert.throws(
+		() => parseGrpcFrameChunk(new Uint8Array(0), new Uint8Array([0, 1, 0, 0, 1])),
+		/gRPC frame too large/
+	);
+	assert.throws(
+		() => unwrapGrpcMessagePayloads(new Uint8Array([0x0a, 0x05, 0x01])),
+		/Invalid gRPC protobuf wrapper/
+	);
+}
+
+{
+	const gun = getTransportConfig({ 传输协议: 'grpc', gRPC模式: 'gun' });
+	const multi = getTransportConfig({ 传输协议: 'grpc', gRPC模式: 'multi' });
+	assert.equal(gun.type, 'grpc&mode=gun&alpn=h2');
+	assert.equal(multi.type, 'grpc&mode=multi&alpn=h2');
+	assert.equal(gun.路径字段名, 'serviceName');
+	assert.equal(gun.域名字段名, 'authority');
+}
+
+{
+	const serviceName = getTransportPathParamValue({ 传输协议: 'grpc', 随机路径: true, PATH: '/secret' }, '/secret?ed=2560');
+	assert.equal(serviceName, '/secret', 'gRPC serviceName must stay compatible with a configured PATH gate');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const baseConfig = {
+		UUID: uuid,
+		HOST: 'worker.example',
+		HOSTS: ['worker.example'],
+		PATH: '/',
+		协议类型: 'vless',
+		传输协议: 'grpc',
+		gRPC模式: 'gun',
+		gRPCUserAgent: 'UnitTest/1.0',
+		跳过证书验证: false,
+		启用0RTT: false,
+		TLS分片: null,
+		随机路径: false,
+		ECH: false,
+		ECHConfig: { DNS: 'https://dns.example/dns-query', SNI: 'cloudflare-ech.com' },
+		SS: { 加密方式: 'aes-128-gcm', TLS: true },
+		Fingerprint: 'chrome',
+		优选订阅生成: { local: true, 本地IP库: { 随机IP: false, 随机数量: 1, 指定端口: -1 }, SUB: null, SUBNAME: 'edge', SUBUpdateTime: 3 },
+		订阅转换配置: { SUBAPI: 'https://sub.example', SUBCONFIG: '', SUBEMOJI: false },
+		反代: { PROXYIP: 'auto', SOCKS5: { 启用: null, 全局: false, 账号: null, 白名单: [] }, 路径模板: { PROXYIP: 'proxyip={{IP:PORT}}' } },
+		TG: { 启用: false },
+		CF: { Usage: { success: false, pages: 0, workers: 0, total: 0, max: 100000 } },
+	};
+	for (const mode of ['gun', 'multi']) {
+		const config = await readConfigJson({ KV: makeFakeKV({ 'config.json': JSON.stringify({ ...baseConfig, gRPC模式: mode }) }) }, 'worker.example', uuid, 'UnitTest/1.0');
+		assert.equal(config.LINK.includes(`type=grpc&mode=${mode}&alpn=h2`), true);
+		assert.equal(config.LINK.includes('authority=worker.example'), true);
+		assert.equal(config.LINK.includes('serviceName=%2F'), true);
+	}
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const config = await readConfigJson({
+		KV: makeFakeKV({
+			'config.json': JSON.stringify({
+				UUID: uuid,
+				HOST: 'worker.example',
+				HOSTS: ['worker.example'],
+			}),
+		}),
+	}, 'worker.example', uuid, 'UnitTest/1.0');
+
+	assert.equal(config.HOST, 'worker.example');
+	assert.equal(config.传输协议, 'ws');
+	assert.equal(config.ECH, false, 'fresh generated configs should keep ECH off unless explicitly enabled');
+	assert.equal(config.反代.PROXYIP, 'auto');
+	assert.equal(config.优选订阅生成.SUBNAME, 'edgetunnel');
+	assert.equal(config.LINK.includes(`vless://${uuid}@worker.example:443`), true);
+	assert.equal(config.LINK.includes('ech='), false, 'fresh generated node links should not include ECH by default');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const [alpha, beta] = await Promise.all([
+		readConfigJson({ KV: makeFakeKV({}, { getDelays: { 'tg.json': 25 } }), HOST: 'alpha.example' }, 'alpha.example', uuid, 'UA-A'),
+		readConfigJson({ KV: makeFakeKV({}), HOST: 'beta.example' }, 'beta.example', uuid, 'UA-B'),
+	]);
+	assert.equal(alpha.HOST, 'alpha.example');
+	assert.deepEqual(alpha.HOSTS, ['alpha.example']);
+	assert.equal(alpha.gRPCUserAgent, 'UA-A');
+	assert.equal(beta.HOST, 'beta.example');
+	assert.deepEqual(beta.HOSTS, ['beta.example']);
+	assert.equal(beta.gRPCUserAgent, 'UA-B');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const config = await readConfigJson({ KV: makeFakeKV({}), HOST: '[2606:4700::1]:443' }, 'worker.example', uuid, 'UnitTest/1.0');
+	assert.deepEqual(config.HOSTS, ['2606:4700::1'], 'HOST normalization must preserve IPv6 literals');
+	assert.equal(normalizeConfigHost('https://[2606:4700::2]:8443/path'), '2606:4700::2');
+	assert.equal(normalizeConfigHost('https://Example.COM:443/path'), 'example.com');
+}
+
+{
+	assert.deepEqual(await splitConfigArray(null), []);
+	assert.deepEqual(await splitConfigArray([' a ', 'b\nc', undefined]), ['a', 'b', 'c']);
+	assert.throws(() => base64SecretEncode('payload', ''), /Secret is empty/);
+	assert.throws(() => base64SecretDecode(btoa('payload'), ''), /Secret is empty/);
+}
+
+{
+	const translated = translateHTMLVisibleText('<html lang="zh-CN"><body><button title="保存配置">保存配置</button><p>请稍候</p><script>const label="保存配置";</script></body></html>');
+	const visibleHtml = translated.replace(/<script\b[\s\S]*?<\/script>/gi, '');
+	assert.equal(translated.includes('lang="en"'), true);
+	assert.equal(/[\u3400-\u9fff\uf900-\ufaff]/.test(visibleHtml), false, 'visible translated HTML should not leak non-English Han text');
+	assert.equal(translated.includes('<script>const label="保存配置";</script>'), true, 'script contents should not be rewritten server-side');
+}
+
+{
+	const translated = translateHTMLVisibleText('<html><body><template><section aria-label="网络环境"><button title="清空列表" data-tip="端口为 0 时，随机设置 443、2053、2083、2087、2096、8443 端口。">清空列表</button><p>在线优选</p></section></template></body></html>');
+	assert.equal(/[\u3400-\u9fff\uf900-\ufaff]/.test(translated), false, 'template UI text should be translated before client-side rendering');
+}
+
+{
+	const injected = injectEnglishRuntimeTranslator('<html><body><p>保存配置</p></body></html>');
+	const scriptMatch = injected.match(/<script data-english-runtime-translator>([\s\S]*?)<\/script>/);
+	assert.ok(scriptMatch, 'runtime translator script should be injected');
+	assert.equal(/[\u3400-\u9fff\uf900-\ufaff]/.test(scriptMatch[1]), false, 'runtime translator script should escape raw non-English text');
+	new Function(scriptMatch[1]);
+}
+
+{
+	assert.equal(normalizeEnglishStaticPageCachePath('/admin?tab=config&ts=1'), '/admin');
+	assert.equal(normalizeEnglishStaticPageCachePath('/login?next=%2Fadmin'), '/login');
+	assert.equal(normalizeEnglishStaticPageCachePath('/noKV?reason=missing'), '/noKV');
+	assert.equal(normalizeEnglishStaticPageCachePath('/assets/app.js?v=1'), '/assets/app.js?v=1');
+}
+
+function fakeLogRequest(url = 'https://worker.example/sub?token=redacted') {
+	return {
+		cf: { asn: 13335, asOrganization: 'Cloudflare', country: 'US', city: 'Austin' },
+		url,
+		headers: {
+			get(name) {
+				if (String(name).toLowerCase() === 'user-agent') return 'UnitTest/1.0';
+				return null;
+			},
+		},
+	};
+}
+
+{
+	const firstKey = buildRequestLogEntryKey(1000, 'a');
+	const secondKey = buildRequestLogEntryKey(2000, 'b');
+	assert.equal(firstKey < secondKey, false, 'newer log keys should sort before older keys');
+	assert.equal(firstKey.startsWith('log:entry:'), true);
+}
+
+{
+	const kv = makeFakeKV();
+	await writeRequestLogEntry({ KV: kv }, { TYPE: 'Get_SUB', TIME: 1000, URL: 'https://worker.example/a' }, 'Get_SUB', 1000);
+
+	assert.equal(kv.puts.length, 0, 'KV request logging should be opt-in by default');
+}
+
+{
+	const kv = makeFakeKV();
+	const env = { KV: kv, ENABLE_KV_LOG: '1' };
+	await writeRequestLogEntry(env, { TYPE: 'Get_SUB', TIME: 1000, URL: 'https://worker.example/a' }, 'Get_SUB', 1000);
+	await writeRequestLogEntry(env, { TYPE: 'Get_SUB', TIME: 1001, URL: 'https://worker.example/b' }, 'Get_SUB', 1001);
+
+	assert.equal(kv.puts.filter(call => call.key.startsWith('log:entry:')).length, 2);
+	assert.equal(kv.puts.some(call => call.key === 'log.json'), false, 'append-only logging must not write the legacy shared log.json key');
+}
+
+{
+	const kv = makeFakeKV();
+	await writeRequestLogEntry({ KV: kv, ENABLE_KV_LOG: '1' }, { TYPE: 'Get_SUB', TIME: 1000, URL: 'https://worker.example/old' }, 'Get_SUB', 1000);
+	await writeRequestLogEntry({ KV: kv, ENABLE_KV_LOG: '1' }, { TYPE: 'Get_SUB', TIME: 2000, URL: 'https://worker.example/new' }, 'Get_SUB', 2000);
+
+	const logs = await readRequestLogs({ KV: kv }, { limit: 10 });
+	assert.deepEqual(logs.map(log => log.URL), ['https://worker.example/new', 'https://worker.example/old']);
+}
+
+{
+	const legacy = JSON.stringify([{ TYPE: 'Legacy', TIME: 1, URL: 'https://worker.example/legacy' }]);
+	const kv = makeFakeKV({ 'log.json': legacy });
+	const logs = await readRequestLogs({ KV: kv }, { limit: 10 });
+	assert.deepEqual(logs, JSON.parse(legacy));
+}
+
+{
+	let getCalls = 0, inFlightGets = 0, maxInFlightGets = 0, listCalls = 0;
+	const store = new Map();
+	for (let i = 0; i < 80; i++) {
+		const key = `log:entry:${String(9999999999999 - i).padStart(13, '0')}:id-${i}`;
+		store.set(key, JSON.stringify({ TYPE: 'Get_SUB', TIME: i, URL: `https://worker.example/${i}` }));
+	}
+	store.set('log.json', JSON.stringify([{ TYPE: 'Legacy', TIME: 1, URL: 'https://worker.example/legacy' }]));
+	const kv = {
+		async list({ prefix = '', limit = 1000 } = {}) {
+			listCalls++;
+			const names = [...store.keys()].filter(key => key.startsWith(prefix)).sort().slice(0, limit);
+			return { keys: names.map(name => ({ name })), list_complete: true };
+		},
+		async get(key) {
+			getCalls++;
+			inFlightGets++;
+			maxInFlightGets = Math.max(maxInFlightGets, inFlightGets);
+			await new Promise(resolve => setTimeout(resolve, 2));
+			inFlightGets--;
+			return store.get(key) || null;
+		},
+	};
+	const logs = await readRequestLogs({ KV: kv }, { limit: 100 });
+	assert.equal(listCalls, 1);
+	assert.equal(getCalls <= 34, true, 'admin log reads should leave room for list/subrequests under the Worker free-plan cap');
+	assert.equal(maxInFlightGets <= 4, true, 'admin log reads should not fan out all KV gets concurrently');
+	assert.equal(logs.some(log => log.TYPE === 'Legacy'), false, 'append-log reads should not fall back to stale legacy log.json after reading entry keys');
+}
+
+{
+	const kv = makeFakeKV();
+	await recordRequestLog({ KV: kv, ENABLE_KV_LOG: '1' }, { url: 'https://worker.example/sub', headers: { get: () => null } }, '203.0.113.55', 'Get_SUB', { TG: { 启用: false } }, true);
+	const logs = await readRequestLogs({ KV: kv }, { limit: 10 });
+	assert.equal(logs.length, 1, 'request logs should be written even when request.cf is unavailable');
+	assert.equal(logs[0].ASN, 'AS0 Unknown');
+	assert.equal(logs[0].CC, 'N/A N/A');
+}
+
+{
+	const kv = makeFakeKV();
+	await recordRequestLog({ KV: kv, ENABLE_KV_LOG: '1', OFF_LOG: '1' }, fakeLogRequest(), '203.0.113.10', 'Get_SUB', { TG: { 启用: false } }, true);
+	assert.equal(kv.puts.length, 0, 'OFF_LOG should disable KV log writes');
+}
+
+{
+	const ua = 'UnitTest/1.0';
+	const admin = 'test-admin-password';
+	const key = 'default-key-change-with-KEY-env-if-needed';
+	const env = { ADMIN: admin, UUID: '11111111-1111-4111-8111-111111111111', KV: makeFakeKV({ 'ADD.txt': '203.0.113.1' }) };
+	const headers = { 'User-Agent': ua, Cookie: `auth=${md5md5(ua + key + admin)}` };
+	const ctx = { waitUntil() {} };
+
+	const addResponse = await workerModule.default.fetch(new Request('https://worker.example/admin/ADD.txt', { headers }), env, ctx);
+	assert.equal(addResponse.status, 200);
+	assert.equal(addResponse.headers.get('asn'), '0');
+	assert.equal(await addResponse.text(), '203.0.113.1');
+
+	const cfResponse = await workerModule.default.fetch(new Request('https://worker.example/admin/cf.json', { headers }), env, ctx);
+	assert.equal(cfResponse.status, 200);
+	assert.deepEqual(JSON.parse(await cfResponse.text()), {});
+}
+
+{
+	// The TUNNEL must not be gated on the admin password. A UUID-only deployment (no ADMIN) is a valid config:
+	// its WS/gRPC routes must still be reachable, while /admin stays disabled. (Regression: the admin-password
+	// chain used to fall back to the UUID, so narrowing it to explicit-ADMIN silently killed UUID-only tunnels.)
+	const ctx = { waitUntil() { } };
+	const uuidOnlyEnv = { UUID: '11111111-1111-4111-8111-111111111111' }; // no ADMIN
+
+	// A WS upgrade on a UUID-only deploy must NOT fall through to the decoy — it must enter the tunnel handler
+	// (which rejects the fake handshake, but the point is that routing reached it, i.e. not a 200 decoy page).
+	const wsResponse = await workerModule.default.fetch(
+		new Request('https://worker.example/', { headers: { 'User-Agent': 'UnitTest/1.0', Upgrade: 'websocket' } }),
+		uuidOnlyEnv, ctx,
+	);
+	assert.notEqual(wsResponse.status, 200, 'a UUID-only deploy must still route WS to the tunnel, not the decoy page');
+
+	// ...and the admin panel stays disabled without an explicit ADMIN (the security fix), while ordinary traffic
+	// gets the camouflage page — NOT a distinctive "/noADMIN" 404 that would announce this is an unconfigured proxy.
+	const ordinary = await workerModule.default.fetch(
+		new Request('https://worker.example/some/page', { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+		uuidOnlyEnv, ctx,
+	);
+	assert.equal(ordinary.status, 200, 'admin-disabled ordinary traffic gets the decoy, not a 404 fingerprint');
+	assert.match(await ordinary.text(), /nginx/i, 'the decoy is the nginx camouflage page');
+
+	// But the ADMIN paths (/login, /admin) show a setup reminder instead of the silent decoy, so the operator
+	// knows what to configure. Fires only on those paths while ADMIN and/or KV are missing.
+	for (const path of ['login', 'admin']) {
+		const resp = await workerModule.default.fetch(
+			new Request(`https://worker.example/${path}`, { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+			uuidOnlyEnv, ctx,
+		);
+		assert.equal(resp.status, 503, `/${path} without ADMIN/KV returns the setup reminder`);
+		const body = await resp.text();
+		assert.match(body, /Setup required/i, `the /${path} reminder says setup is required`);
+		assert.match(body, /ADMIN/, `the /${path} reminder names ADMIN`);
+		assert.match(body, /\bKV\b/, `the /${path} reminder names KV`);
+		// Stealth: the reminder must not identify this as a proxy/tunnel.
+		assert.doesNotMatch(body, /proxy|tunnel|vpn|vless|trojan/i, `the /${path} reminder stays generic`);
+	}
+
+	// With ADMIN set but KV still missing, /login must ALSO get the reminder (this was the user's exact case:
+	// the admin block is gated on KV, so without it /login silently fell to the decoy).
+	const adminNoKv = await workerModule.default.fetch(
+		new Request('https://worker.example/login', { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+		{ UUID: '11111111-1111-4111-8111-111111111111', ADMIN: 'pw' }, ctx,
+	);
+	assert.equal(adminNoKv.status, 503, '/login with ADMIN but no KV still returns the setup reminder');
+	assert.match(await adminNoKv.text(), /\bKV\b/, 'the reminder points at the missing KV binding');
+}
+
+{
+	const response = await workerModule.default.fetch(
+		new Request('https://worker.example/not-a-tunnel', { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+		{ ADMIN: 'admin-password', UUID: '11111111-1111-4111-8111-111111111111', URL: '1101' },
+		{ waitUntil() {} }
+	);
+	assert.equal(response.status, 530);
+	assert.equal(response.statusText, 'Origin Error');
+	const body = await response.text();
+	assert.equal(body.includes('1101'), true);
+	assert.equal(body.includes('Worker threw exception'), true);
+}
+
+{
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response('origin.example', {
+		status: 200,
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'content-encoding': 'gzip',
+			'set-cookie': 'origin-session=leak',
+			'content-security-policy': "default-src 'self'",
+		},
+	});
+	try {
+		const response = await workerModule.default.fetch(
+			new Request('https://worker.example/camouflage', { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+			{ ADMIN: 'admin-password', UUID: '11111111-1111-4111-8111-111111111111', URL: 'https://origin.example' },
+			{ waitUntil() {} }
+		);
+		assert.equal(await response.text(), 'origin.example', 'compressed camouflage responses should stream through without host rewriting');
+		assert.equal(response.headers.get('content-encoding'), 'gzip');
+		assert.equal(response.headers.has('set-cookie'), false, 'camouflage pass-through must not leak upstream cookies');
+		assert.equal(response.headers.has('content-security-policy'), false, 'camouflage pass-through must not leak upstream CSP');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response('hello origin.example', {
+		status: 200,
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'content-length': '20',
+			'etag': '"old-origin"',
+			'set-cookie': 'origin-session=leak',
+			'content-security-policy': "default-src 'self'",
+		},
+	});
+	try {
+		const response = await workerModule.default.fetch(
+			new Request('https://worker.example/camouflage', { headers: { 'User-Agent': 'UnitTest/1.0' } }),
+			{ ADMIN: 'admin-password', UUID: '11111111-1111-4111-8111-111111111111', URL: 'https://origin.example' },
+			{ waitUntil() {} }
+		);
+		assert.equal(await response.text(), 'hello worker.example');
+		assert.equal(response.headers.has('content-length'), false, 'rewritten camouflage body must not keep stale content-length');
+		assert.equal(response.headers.has('etag'), false, 'rewritten camouflage body must not keep stale etag');
+		assert.equal(response.headers.has('content-encoding'), false, 'rewritten camouflage body must not keep stale content-encoding');
+		assert.equal(response.headers.has('set-cookie'), false, 'rewritten camouflage body must not leak upstream cookies');
+		assert.equal(response.headers.has('content-security-policy'), false, 'rewritten camouflage body must not leak upstream CSP');
+		assert.equal(response.headers.get('cache-control'), 'no-store');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	for (const path of ['/', `/${uuid}`, `/assets/${uuid}`]) {
+		const request = new Request(`https://worker.example${path}`, {
+			headers: { Upgrade: 'websocket', 'User-Agent': 'UnitTest/1.0' },
+		});
+		const response = await workerModule.default.fetch(request, { ADMIN: 'admin-password', UUID: uuid }, { waitUntil() {} });
+		assert.equal(response.status, 101, `WebSocket tunnel route should accept generated path ${path}`);
+	}
+}
+
+{
+	const ua = 'UnitTest/1.0';
+	const admin = 'test-admin-password';
+	const key = 'default-key-change-with-KEY-env-if-needed';
+	const env = { ADMIN: admin, UUID: '11111111-1111-4111-8111-111111111111', CONNECT_TIMEOUT_MS: '400', KV: makeFakeKV() };
+	const headers = { 'User-Agent': ua, Cookie: `auth=${md5md5(ua + key + admin)}` };
+	let closed = false;
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([0x05, 0x00]));
+				controller.enqueue(new Uint8Array([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38]));
+			},
+		}),
+		writable: new WritableStream(),
+		closed: new Promise(() => {}),
+		close() {
+			closed = true;
+		},
+	};
+	const request = new Request('https://worker.example/admin/check?socks5=proxy.example:1080', { headers });
+	request.fetcher = { connect: () => socket };
+	const response = await withTestTimeout(workerModule.default.fetch(request, env, { waitUntil() {} }), 1_500, 'admin proxy check TLS timeout');
+	assert.equal(response.status, 200);
+	const result = JSON.parse(await response.text());
+	assert.equal(result.success, false);
+	assert.match(result.error, /Proxy check TLS handshake timed out/);
+	assert.equal(closed, true, 'admin proxy check timeout should close the probe socket');
+}
+
+{
+	const kv = makeFakeKV();
+	const config = { TG: { 启用: false } };
+	const request = fakeLogRequest('https://worker.example/admin/saveConfig');
+	await recordRequestLog({ KV: kv, ENABLE_KV_LOG: '1' }, request, '203.0.113.10', 'Save_Config', config, true);
+	await recordRequestLog({ KV: kv, ENABLE_KV_LOG: '1' }, request, '203.0.113.10', 'Save_Config', config, true);
+
+	assert.equal(kv.puts.filter(call => call.key.startsWith('log:entry:')).length, 1, 'duplicate non-subscription admin logs should be throttled');
+	assert.equal(kv.puts.some(call => call.key.startsWith('log:dedupe:')), true);
+}
+
+{
+	assert.deepEqual(expandPreferredEndpointVariants('speedtest.net'), ['speedtest.net', 'www.speedtest.net']);
+	assert.deepEqual(expandPreferredEndpointVariants('www.speedtest.net'), ['www.speedtest.net', 'speedtest.net']);
+	assert.deepEqual(expandPreferredEndpointVariants('example.com:8443#edge'), ['example.com:8443#edge', 'www.example.com:8443#edge']);
+	assert.deepEqual(expandPreferredEndpointVariants('Example.COM:8443#edge'), ['example.com:8443#edge', 'www.example.com:8443#edge']);
+	assert.deepEqual(expandPreferredEndpointVariants('WWW.Example.COM:8443#edge'), ['www.example.com:8443#edge', 'example.com:8443#edge']);
+	assert.deepEqual(expandPreferredEndpointVariants('cdn.example.com:8443#sub'), ['cdn.example.com:8443#sub']);
+	assert.deepEqual(expandPreferredEndpointVariants('104.21.105.47:443#ip'), ['104.21.105.47:443#ip']);
+	assert.deepEqual(expandPreferredEndpointVariants('[2606:4700::6811:9316]:443#ipv6'), ['[2606:4700::6811:9316]:443#ipv6']);
+	assert.deepEqual(expandPreferredEndpointVariants('*.example.com:443#wildcard'), ['*.example.com:443#wildcard']);
+}
+
+{
+	let writerCalls = 0;
+	const writes = [];
+	const queue = createUploadQueue({
+		获取写入器: () => {
+			writerCalls++;
+			return {
+				async write(chunk) {
+					writes.push(new Uint8Array(chunk));
+				},
+			};
+		},
+		释放写入器() {},
+		关闭连接() {},
+		名称: 'unit upload',
+	});
+	assert.equal(queue.写入(new Uint8Array([1, 2, 3])), true);
+	await queue.等待空();
+	assert.equal(writerCalls, 1, 'upload queue should acquire the writer only when drain writes');
+	assert.deepEqual(writes, [new Uint8Array([1, 2, 3])]);
+}
+
+{
+	// UPLINK_WRITE_TIMEOUT_MS getter: off by default, clamped to [1s, 2min] when enabled.
+	assert.equal(getUplinkWriteTimeoutMs({}), 0, 'uplink write timeout defaults to off');
+	assert.equal(getUplinkWriteTimeoutMs({ UPLINK_WRITE_TIMEOUT_MS: '0' }), 0);
+	assert.equal(getUplinkWriteTimeoutMs({ UPLINK_WRITE_TIMEOUT_MS: '-5' }), 0);
+	assert.equal(getUplinkWriteTimeoutMs({ UPLINK_WRITE_TIMEOUT_MS: '500' }), 1000, 'clamped up to the 1s floor');
+	assert.equal(getUplinkWriteTimeoutMs({ UPLINK_WRITE_TIMEOUT_MS: '30000' }), 30000);
+	assert.equal(getUplinkWriteTimeoutMs({ UPLINK_WRITE_TIMEOUT_MS: '999999' }), 120000, 'clamped down to the 2min cap');
+}
+
+{
+	// Split first-byte timeouts: both default OFF; a shared FIRST_BYTE_TIMEOUT_MS sets both; per-route vars
+	// override; values clamp to [1s, 15s].
+	assert.equal(getDirectFirstByteTimeoutMs({}), 0, 'direct first-byte timeout defaults off');
+	assert.equal(getProxyFirstByteTimeoutMs({}), 0, 'proxy first-byte timeout defaults off');
+	assert.equal(getDirectFirstByteTimeoutMs({ FIRST_BYTE_TIMEOUT_MS: '4000' }), 4000, 'shared value applies to direct');
+	assert.equal(getProxyFirstByteTimeoutMs({ FIRST_BYTE_TIMEOUT_MS: '4000' }), 4000, 'shared value applies to proxy');
+	assert.equal(getDirectFirstByteTimeoutMs({ FIRST_BYTE_TIMEOUT_MS: '4000', DIRECT_FIRST_BYTE_TIMEOUT_MS: '3000' }), 3000, 'per-route var overrides the shared one');
+	assert.equal(getProxyFirstByteTimeoutMs({ FIRST_BYTE_TIMEOUT_MS: '4000', PROXY_FIRST_BYTE_TIMEOUT_MS: '5000' }), 5000, 'per-route proxy override');
+	assert.equal(getDirectFirstByteTimeoutMs({ DIRECT_FIRST_BYTE_TIMEOUT_MS: '200' }), 1000, 'clamped up to the 1s floor');
+	assert.equal(getProxyFirstByteTimeoutMs({ PROXY_FIRST_BYTE_TIMEOUT_MS: '99999' }), 15000, 'clamped down to the 15s cap');
+}
+
+{
+	// Opt-in stuck-writer watchdog: a writer.write() that never settles tears the connection down within the
+	// bound (no 重试连接 provided -> the failed write closes the connection) instead of blocking forever.
+	let closed = false;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { return new Promise(() => { }); } }), // never resolves
+		释放写入器() { },
+		关闭连接() { closed = true; },
+		名称: 'stuck upload',
+		写入超时毫秒: 40,
+	});
+	queue.写入(new Uint8Array([1, 2, 3]));
+	await new Promise(r => setTimeout(r, 120)); // past the 40ms write bound
+	assert.equal(closed, true, 'a wedged writer.write() trips UPLINK_WRITE_TIMEOUT_MS and closes the connection');
+}
+
+{
+	// Default (0 = off): a slow/pending writer.write() is NOT aborted — a live-but-backpressured upload must
+	// never be torn down by this watchdog when it is disabled.
+	let closed = false;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { return new Promise(() => { }); } }), // never resolves
+		释放写入器() { },
+		关闭连接() { closed = true; },
+		名称: 'patient upload',
+		// 写入超时毫秒 omitted -> 0 (off)
+	});
+	queue.写入(new Uint8Array([1, 2, 3]));
+	await new Promise(r => setTimeout(r, 120));
+	assert.equal(closed, false, 'with the timeout off, a pending write is never aborted');
+}
+
+{
+	// Post-write retry removed: once writer.write() has been invoked, a rejection must NOT reconnect and
+	// resend the chunk on a fresh socket (delivery is uncertain — that could duplicate/corrupt the stream).
+	// It closes the connection so the client re-dials; 重试连接 must never be invoked from the queue.
+	let closed = false, retried = false, writes = 0;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { writes++; return Promise.reject(new Error('boom')); } }),
+		释放写入器() { },
+		重试连接: async () => { retried = true; },
+		关闭连接() { closed = true; },
+		名称: 'no-retry upload',
+	});
+	queue.写入(new Uint8Array([1, 2, 3]));
+	await new Promise(r => setTimeout(r, 30));
+	assert.equal(writes, 1, 'a failed write is attempted exactly once — never resent on a fresh socket');
+	assert.equal(retried, false, 'a post-write failure must NOT trigger reconnect/replay');
+	assert.equal(closed, true, 'a post-write failure closes the connection so the client re-dials');
+}
+
+{
+	// In-flight write marks delivery ambiguous immediately: 写入开始 fires BEFORE writer.write() resolves,
+	// so a remote EOF while a later chunk is still writing won't let the no-data fallback replay.
+	let startedWhilePending = false, resolved = false, release = null;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { return new Promise(r => { release = () => { resolved = true; r(); }; }); } }),
+		释放写入器() { },
+		关闭连接() { },
+		写入开始: () => { startedWhilePending = !resolved; },
+		名称: 'in-flight upload',
+	});
+	queue.写入(new Uint8Array([1, 2, 3]));
+	await new Promise(r => setTimeout(r, 20)); // the write is now pending (unresolved)
+	assert.equal(startedWhilePending, true, '写入开始 fires before the write resolves (delivery ambiguous while in-flight)');
+	assert.equal(resolved, false, 'the write is still pending at this point');
+	try { release?.(); } catch (e) { }
+}
+
+{
+	// In-flight write bytes count toward the queue cap. bundle() clears a chunk from queuedBytes the moment
+	// it forms a write, but the backing memory is still retained until writer.write() resolves — so a new
+	// chunk that would push retained bytes past UPLINK_QUEUE_MAX_BYTES must be rejected while the prior write
+	// is still pending, or a slow remote lets memory reach ~2x the cap.
+	const MAX = 16 * 1024 * 1024; // UPLINK_QUEUE_MAX_BYTES
+	let closed = false;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { return new Promise(() => { }); } }), // never resolves -> stays in-flight
+		释放写入器() { },
+		关闭连接() { closed = true; },
+		名称: 'in-flight accounting',
+	});
+	assert.equal(queue.写入(new Uint8Array(MAX)), true, 'a chunk at exactly the cap is admitted');
+	await new Promise(r => setTimeout(r, 20)); // drain picks it up; write() blocks -> inFlightBytes = MAX
+	assert.throws(() => queue.写入(new Uint8Array(1)), /upload queue overflow/, 'one more byte while a cap-sized write is in-flight overflows (in-flight bytes are counted)');
+	assert.equal(closed, true, 'the in-flight-accounted overflow closes the connection');
+}
+
+{
+	// inFlightBytes is released when a write settles: after a near-cap write completes, the queue admits
+	// another near-cap chunk — the accounting must not leak and cause a phantom overflow.
+	const MAX = 16 * 1024 * 1024; // UPLINK_QUEUE_MAX_BYTES
+	let releaseWrite = null, closed = false;
+	const queue = createUploadQueue({
+		获取写入器: () => ({ write() { return new Promise(r => { releaseWrite = r; }); } }),
+		释放写入器() { },
+		关闭连接() { closed = true; },
+		名称: 'in-flight release',
+	});
+	queue.写入(new Uint8Array(MAX - 1));
+	await new Promise(r => setTimeout(r, 20)); // in-flight -> inFlightBytes = MAX - 1
+	releaseWrite(); // settles -> inFlightBytes back to 0
+	await queue.等待空();
+	assert.doesNotThrow(() => queue.写入(new Uint8Array(MAX - 1)), 'after the in-flight write settles, a fresh near-cap chunk is admitted (no accounting leak)');
+	assert.equal(closed, false, 'no phantom overflow after the prior write drained');
+	try { releaseWrite?.(); } catch (e) { }
+}
+
+{
+	// Connection tracer (DEBUG-only telemetry). Its accounting helpers are null-safe no-ops when there is no
+	// tracer (DEBUG off -> 创建连接追踪器 returns null), and correctly accumulate bytes/chunks and stamp
+	// first-byte / close when a tracer object is present. Byte formatter renders human-readable sizes.
+	assert.equal(formatByteCount(0), '0B');
+	assert.equal(formatByteCount(512), '512B');
+	assert.equal(formatByteCount(1536), '1.5KB');
+	assert.equal(formatByteCount(5 * 1024 * 1024), '5.00MB');
+	assert.equal(formatByteCount(-1), '0B', 'negative/invalid sizes clamp to 0B');
+	// Null-safe: the hot-path calls pass a possibly-null tracer and must never throw or count.
+	assert.doesNotThrow(() => { traceUplink(null, 100); traceDownlink(null, 100); traceFirstByte(null); traceClose(null, 'x'); });
+	// With a fake tracer object (no timer -> hb:null so no setInterval to clear), the helpers accumulate.
+	const fake = { id: 't', route: 'direct', target: 'a:1', t0: Date.now() - 5, ttfbMs: null, bytesUp: 0, bytesDown: 0, chunksUp: 0, chunksDown: 0, retries: 0, closed: false, hb: null };
+	traceUplink(fake, 300); traceUplink(fake, 200); traceUplink(fake, 0); // 0 is ignored
+	traceDownlink(fake, 1000); traceDownlink(fake, 500);
+	assert.equal(fake.bytesUp, 500, 'uplink bytes accumulate'); assert.equal(fake.chunksUp, 2, 'zero-length uplink not counted as a chunk');
+	assert.equal(fake.bytesDown, 1500, 'downlink bytes accumulate'); assert.equal(fake.chunksDown, 2);
+	traceFirstByte(fake); assert.equal(typeof fake.ttfbMs, 'number', 'first byte stamps a ttfb'); assert.ok(fake.ttfbMs >= 0);
+	const firstTtfb = fake.ttfbMs; traceFirstByte(fake); assert.equal(fake.ttfbMs, firstTtfb, 'first-byte is stamped only once');
+	traceClose(fake, 'eof'); assert.equal(fake.closed, true, 'close marks the tracer closed');
+	traceClose(fake, 'again'); assert.equal(fake.closed, true, 'close is idempotent');
+}
+
+{
+	// Close classification (the P0 telemetry fix): a normal gRPC stream cancellation must NOT be recorded as a
+	// tunnel error. The prior tracer fired 追踪关闭(...,'error') unconditionally, so all 40 "Stream was cancelled"
+	// closes in the captured log were mislabeled reason=error, making the error rate meaningless.
+	assert.equal(isStreamCancellation(new Error('Stream was cancelled.')), true, '"Stream was cancelled." is a cancellation');
+	assert.equal(isStreamCancellation(new Error('The ReadableStream was canceled.')), true);
+	assert.equal(isStreamCancellation(Object.assign(new Error('x'), { name: 'AbortError' })), true, 'AbortError is a cancellation');
+	assert.equal(isStreamCancellation(new Error('connection reset')), false, 'a real error is not a cancellation');
+	assert.equal(isStreamCancellation(null), false);
+	// classifyClose maps context -> {reason, expected}. A cancellation is EXPECTED (not an error).
+	assert.deepEqual(classifyClose({}, new Error('Stream was cancelled.')), { reason: 'runtime_cancel', expected: true }, 'a stream cancel classifies as expected runtime_cancel, not error');
+	assert.deepEqual(classifyClose({ 客户端已关闭: true }, new Error('boom')), { reason: 'client_cancel', expected: true }, 'a client-closed connection classifies as expected client_cancel');
+	assert.deepEqual(classifyClose({ closeHint: 'remote_eof' }, null), { reason: 'remote_eof', expected: true }, 'an explicit close hint wins');
+	assert.deepEqual(classifyClose({}, Object.assign(new Error('overflow'), { isQueueOverflow: true })), { reason: 'queue_overflow', expected: false }, 'a queue overflow is a real (unexpected) close');
+	assert.deepEqual(classifyClose({}, new Error('connection reset by peer')), { reason: 'error', expected: false }, 'a genuine error stays reason=error/unexpected');
+	assert.deepEqual(classifyClose({}, null), { reason: 'eof', expected: true }, 'a clean end with no error is eof/expected');
+	// Precise close hints from the watchdogs / EOF / abort: a clean remote EOF and a client abort are expected;
+	// a first-byte timeout is a blackhole signal and stays UNexpected so it surfaces.
+	assert.deepEqual(classifyClose({ closeHint: 'remote_eof' }, null), { reason: 'remote_eof', expected: true });
+	assert.deepEqual(classifyClose({ closeHint: 'remote_eof_no_data' }, null), { reason: 'remote_eof_no_data', expected: true });
+	assert.deepEqual(classifyClose({ closeHint: 'client_abort' }, null), { reason: 'client_abort', expected: true });
+	assert.deepEqual(classifyClose({ closeHint: 'idle_timeout' }, null), { reason: 'idle_timeout', expected: true });
+	assert.deepEqual(classifyClose({ closeHint: 'first_byte_timeout' }, null), { reason: 'first_byte_timeout', expected: false }, 'a first-byte timeout (blackhole) is surfaced as unexpected');
+}
+
+{
+	// updateTraceRatePeaks folds a partial interval into the running peak. This is why the close path now calls
+	// it: a connection shorter than one heartbeat interval used to report peak_down_bps=0 (54/81 in the capture).
+	const s = { bytesUp: 0, bytesDown: 500000, lastStatUp: 0, lastStatDown: 0, lastStatAt: Date.now() - 1000, peakUpBps: 0, peakDownBps: 0 };
+	const r = updateTraceRatePeaks(s);
+	assert.ok(r.downBps > 0, 'a partial interval with bytes produces a non-zero rate');
+	assert.equal(s.peakDownBps, r.downBps, 'the peak is updated from the partial interval');
+	assert.ok(Math.abs(s.peakDownBps - 500000) < 50000, '~500KB in ~1s ≈ 500000 B/s');
+	assert.equal(r.moved, true);
+	// A second call with no new bytes yields a zero rate and does not lower the recorded peak.
+	const r2 = updateTraceRatePeaks(s);
+	assert.equal(r2.downBps, 0); assert.equal(r2.moved, false);
+	assert.ok(s.peakDownBps > 0, 'peak is a running max, not reset by an idle interval');
+}
+
+{
+	assert.equal(getDialStaggerMs({}), 90);
+	assert.equal(getDialStaggerMs({ DIAL_STAGGER_MS: '0' }), 0);
+	assert.equal(getDialStaggerMs({ DIAL_STAGGER_MS: '37.6' }), 38);
+	assert.equal(getDialStaggerMs({ DIAL_STAGGER_MS: '9000' }), 500);
+	assert.equal(getDialStaggerMs({ DIAL_STAGGER_MS: '-1' }), 90);
+}
+
+{
+	const headers = { get: () => null };
+	const clashBase64 = getSubscriptionRequestOptions(new URL('https://worker.example/sub?target=clash&base64'), { headers }, 'mozilla', false);
+	assert.equal(clashBase64.type, 'clash');
+	assert.equal(clashBase64.shouldBase64Subscription, true);
+	assert.equal(clashBase64.isSubConverterRequest, false);
+
+	const rawBase64 = getSubscriptionRequestOptions(new URL('https://worker.example/sub?base64'), { headers }, 'mozilla', false);
+	assert.equal(rawBase64.type, 'mixed');
+	assert.equal(rawBase64.shouldBase64Subscription, true);
+
+	const converter = getSubscriptionRequestOptions(new URL('https://worker.example/sub?target=clash'), {
+		headers: { get: name => String(name).toLowerCase() === 'subconverter-request' ? '1' : null },
+	}, 'clash', false);
+	assert.equal(converter.type, 'mixed');
+	assert.equal(converter.isSubConverterRequest, true);
+}
+
+{
+	assert.equal(isSpeedTestSite('speed.cloudflare.com'), true);
+	assert.equal(isSpeedTestSite('SPEED.CLOUDFLARE.COM'), true);
+	assert.equal(isSpeedTestSite('edge.speed.cloudflare.com'), true);
+	assert.equal(isSpeedTestSite('not-speed.cloudflare.com.example'), false);
+}
+
+{
+	assert.equal(matchesHostPattern('api.example.com', '*.example.com'), true);
+	assert.equal(matchesHostPattern('badexample.com', '*.example.com'), false);
+	assert.equal(matchesHostPattern('xexampleycom', '*.example.com'), false);
+	assert.equal(matchesHostPattern('media.tapecontent.net', '*tapecontent.net'), true);
+	assert.equal(matchesHostPattern('media.tapecontentXnet', '*tapecontent.net'), false);
+}
+
+{
+	assert.equal(readGrpcFrameLength(new Uint8Array([0, 0, 0, 0, 1])), 1);
+	assert.throws(
+		() => readGrpcFrameLength(new Uint8Array([0, 1, 0, 0, 1])),
+		/gRPC frame too large/
+	);
+}
+
+{
+	const content = [
+		'vless://00000000-0000-4000-8000-000000000000@front.example.com:443?security=tls&type=ws&host=example.com&fp=chrome&sni=example.com&path=%2F&encryption=none#front.example.com',
+		'vless://external-user@front.example.com:443?security=tls&type=ws&host=origin.example.com&sni=origin.example.com&path=%2F#external',
+	].join('\n');
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker.example.net'],
+	});
+	const [generated, external] = result.split('\n');
+
+	assert.equal(generated.includes('11111111-1111-4111-8111-111111111111@front.example.com:443'), true);
+	assert.equal(generated.includes('host=worker.example.net'), true);
+	assert.equal(generated.includes('sni=worker.example.net'), true);
+	assert.equal(generated.includes('#front.example.com'), true);
+	assert.equal(external.includes('front.example.com:443'), true);
+	assert.equal(external.includes('host=origin.example.com'), true);
+	assert.equal(external.includes('sni=origin.example.com'), true);
+}
+
+{
+	const content = 'ss://MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAw@front.example.com:443?plugin=v2ray-plugin%3Bmode%3Dwebsocket%3Bhost%3Dexample.com%3Bpath%3D%252F%3Btls#ss-node';
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker.example.net'],
+	});
+
+	assert.equal(result.includes('front.example.com:443'), true);
+	assert.equal(result.includes(btoa('11111111-1111-4111-8111-111111111111')), true);
+	assert.equal(result.includes('host%3Dworker.example.net%3Bpath'), true);
+}
+
+{
+	const content = [
+		'- name: generated',
+		'  type: vless',
+		'  server: front.example.com',
+		'  uuid: 00000000-0000-4000-8000-000000000000',
+		'  servername: example.com',
+		'  ws-opts:',
+		'    headers:',
+		'      Host: example.com',
+		'- name: external',
+		'  type: vless',
+		'  server: front.example.com',
+		'  uuid: external-user',
+		'  servername: origin.example.com',
+		'  ws-opts:',
+		'    headers:',
+		'      Host: origin.example.com',
+	].join('\n');
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker.example.net'],
+	});
+
+	assert.equal(result.includes('server: front.example.com'), true);
+	assert.equal(result.includes('uuid: 11111111-1111-4111-8111-111111111111'), true);
+	assert.equal(result.includes('servername: worker.example.net'), true);
+	assert.equal(result.includes('Host: worker.example.net'), true);
+	assert.equal(result.includes('uuid: external-user'), true);
+	assert.equal(result.includes('servername: origin.example.com'), true);
+	assert.equal(result.includes('Host: origin.example.com'), true);
+}
+
+{
+	const content = JSON.stringify({
+		outbounds: [
+			{
+				type: 'vless',
+				server: 'front.example.com',
+				uuid: '00000000-0000-4000-8000-000000000000',
+				tls: { server_name: 'example.com' },
+				transport: { type: 'ws', headers: { Host: 'example.com' } },
+			},
+			{
+				type: 'vless',
+				server: 'front.example.com',
+				uuid: 'external-user',
+				tls: { server_name: 'origin.example.com' },
+				transport: { type: 'ws', headers: { Host: 'origin.example.com' } },
+			},
+		],
+	});
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker.example.net'],
+	});
+	const parsed = JSON.parse(result);
+
+	assert.equal(parsed.outbounds[0].server, 'front.example.com');
+	assert.equal(parsed.outbounds[0].uuid, '11111111-1111-4111-8111-111111111111');
+	assert.equal(parsed.outbounds[0].tls.server_name, 'worker.example.net');
+	assert.equal(parsed.outbounds[0].transport.headers.Host, 'worker.example.net');
+	assert.equal(parsed.outbounds[1].server, 'front.example.com');
+	assert.equal(parsed.outbounds[1].uuid, 'external-user');
+	assert.equal(parsed.outbounds[1].tls.server_name, 'origin.example.com');
+	assert.equal(parsed.outbounds[1].transport.headers.Host, 'origin.example.com');
+}
+
+{
+	const content = [
+		'- name: generated',
+		'  type: vless',
+		'  server: front.example.com',
+		'  uuid: 00000000-0000-4000-8000-000000000000',
+		'  servername: example.com',
+		'  ws-opts:',
+		'    headers:',
+		'      Host: example.com',
+	].join('\n');
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker-one.example.net', 'worker-two.example.net'],
+	});
+	const servername = result.match(/servername:\s*([^\n]+)/)?.[1]?.trim();
+	const hostHeader = result.match(/Host:\s*([^\n]+)/)?.[1]?.trim();
+
+	assert.equal(servername, hostHeader, 'generated multi-line node must use the same host for servername and Host header');
+}
+
+{
+	const content = [
+		'- name: generated',
+		'  type: vless',
+		'  server: front.example.com',
+		'  servername: example.com',
+		'  ws-opts:',
+		'    headers:',
+		'      Host: example.com',
+		'  uuid: 00000000-0000-4000-8000-000000000000',
+	].join('\n');
+	const result = finalizeSubscriptionContent(content, {
+		UUID: '11111111-1111-4111-8111-111111111111',
+		HOSTS: ['worker-order.example.net'],
+	});
+
+	assert.equal(result.includes('servername: example.com'), false, 'generated YAML block should replace servername placeholder even when it appears before uuid');
+	assert.equal(result.includes('Host: example.com'), false, 'generated YAML block should replace Host placeholder even when it appears before uuid');
+	assert.equal(result.includes('servername: worker-order.example.net'), true);
+	assert.equal(result.includes('Host: worker-order.example.net'), true);
+	assert.equal(result.includes('uuid: 11111111-1111-4111-8111-111111111111'), true);
+}
+
+{
+	const first = await createTunnelContext(fakeRequest({ colo: 'SJC' }), { PROXYIP: 'first.example.com' });
+	const second = await createTunnelContext(fakeRequest({ colo: 'AMS' }), { PROXYIP: 'second.example.com' });
+	const auto = await createTunnelContext(fakeRequest({ colo: 'SJC' }), { PROXYIP: 'auto' });
+	const forced = await createTunnelContext(fakeRequest({ colo: 'SJC' }), { FORCE_PROXY_HOSTS: 'panel.example.com,*.sub.example.com' });
+
+	await applyProxyParamsToTunnelContext(new URL('https://worker.example.com/proxyip=clean.example.com/ws'), '00000000-0000-4000-8000-000000000000', first);
+	await applyProxyParamsToTunnelContext(new URL('https://worker.example.com/socks5=user:pass@socks.example.com:1080/ws?globalproxy=1'), '00000000-0000-4000-8000-000000000000', second);
+
+	assert.equal(first.proxyIP, 'clean.example.com');
+	assert.equal(first.proxyType, null);
+	assert.equal(first.globalProxyEnabled, false);
+	assert.equal(second.proxyIP, 'second.example.com');
+	assert.equal(second.proxyType, 'socks5');
+	assert.equal(second.globalProxyEnabled, true);
+	assert.equal(second.parsedProxyAddress.hostname, 'socks.example.com');
+	assert.equal(auto.proxyIP, 'sjc.proxyip.cmliussss.net', 'PROXYIP=auto should use the colo auto ProxyIP, not a literal hostname');
+	assert.equal(auto.proxyFallbackEnabled, true);
+	assert.deepEqual(forced.forceProxyHosts, ['panel.example.com', '*.sub.example.com']);
+	assert.equal(matchesHostPattern('panel.example.com', forced.forceProxyHosts[0]), true);
+	assert.equal(matchesHostPattern('api.sub.example.com', forced.forceProxyHosts[1]), true);
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const tunnel = await createTunnelContext(fakeRequest({ colo: 'SJC' }), {
+		PROXYIP: '198.51.100.10:443',
+		FORCE_PROXY_HOSTS: 'panel.example.com,*.example.com',
+	});
+	const connectCalls = [];
+	const upstreamWrites = [];
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([0x48, 0x54, 0x54, 0x50]));
+				controller.close();
+			},
+		}),
+		writable: new WritableStream({
+			write(chunk) {
+				upstreamWrites.push(new Uint8Array(chunk));
+			},
+		}),
+		closed: new Promise(() => {}),
+		close() {},
+	};
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, 'panel.example.com', 2087, new Uint8Array([0xaa]))));
+			controller.close();
+		},
+	});
+	const response = await handleGrpcRequest({
+		body,
+		env: {},
+		tunnel,
+		cf: {},
+		headers: { get: () => null },
+		fetcher: {
+			connect(address) {
+				connectCalls.push(address);
+				return socket;
+			},
+		},
+	}, uuid);
+	const bytes = await collectReadableStream(response.body);
+	const parsed = parseGrpcFrameChunk(new Uint8Array(0), bytes);
+
+	assert.deepEqual(connectCalls, [{ hostname: '198.51.100.10', port: 443 }], 'forced host should dial ProxyIP instead of the target hostname');
+	assert.equal(connectCalls.some(call => call.hostname === 'panel.example.com'), false, 'forced host must not be direct-dialed');
+	assert.deepEqual(upstreamWrites, [new Uint8Array([0xaa])]);
+	assert.deepEqual(parsed.payloads.map(payload => [...payload]), [[0, 0], [0x48, 0x54, 0x54, 0x50]]);
+}
+
+// NOTE: Two tests were removed here that asserted cross-message incremental reassembly of a first
+// packet (a VLESS header split across gRPC messages, and a split VLESS DNS frame). That incremental
+// first-packet parser was deliberately dropped: real xray/v2rayN clients pack the whole VLESS header
+// into the first gRPC message, and the incremental path was a regression risk. The supported
+// single-message paths remain covered by the surrounding tests.
+
+// A further test was removed here: it asserted that a stalled first-packet WRITE closes the direct
+// socket and falls back to ProxyIP. That relied on the initial-data write timeout, which was
+// deliberately dropped (a no-op on Workers that risks aborting healthy high-latency writes).
+
+{
+	const originalConsoleError = console.error;
+	const capturedErrors = [];
+	console.error = (...args) => capturedErrors.push(args);
+	try {
+		await assert.doesNotReject(async () => {
+			const result = await patchSingboxSubscription('{ this is not json', { UUID: '11111111-1111-4111-8111-111111111111' });
+			assert.equal(result, '{ this is not json');
+		});
+	} finally {
+		console.error = originalConsoleError;
+	}
+	assert.equal(capturedErrors.length, 0, 'invalid Singbox JSON should not emit ungated console.error output');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const content = JSON.stringify({
+		outbounds: [
+			{
+				type: 'vless',
+				uuid,
+				tls: { enabled: false },
+			},
+		],
+	});
+	const result = await patchSingboxSubscription(content, { UUID: uuid, Fingerprint: 'chrome', ECH: false });
+	const parsed = JSON.parse(result);
+	assert.equal(parsed.outbounds[0].tls.enabled, true, 'Singbox hotpatch must force TLS enabled for generated nodes');
+}
+
+{
+	assert.doesNotThrow(() => {
+		const result = patchSurgeSubscription('node = trojan, front.example.com, 443, password=pw, skip-cert-verify=false', 'https://worker.example/sub', {
+			随机路径: false,
+			完整节点路径: '/',
+			跳过证书验证: false,
+			优选订阅生成: { SUBUpdateTime: 3 },
+		});
+		assert.equal(result.includes('#!MANAGED-CONFIG https://worker.example/sub'), true);
+	});
+}
+
+{
+	const patched = patchClashSubscription('mode: Rule\r\nproxies:\r\n  - name: node\r\n', {});
+	assert.equal(patched.includes('\r'), false, 'Clash hotpatch should normalize CRLF input to LF');
+	assert.equal(patched.includes('mode: rule\n'), true);
+}
+
+{
+	let liveCalls = 0;
+	const env = {};
+	const first = getProxyResolutionRecord(env, null, 'coalesce.example.com', 'target.example.com', '00000000-0000-4000-8000-000000000000', async () => {
+		liveCalls++;
+		await new Promise(resolve => setTimeout(resolve, 20));
+		return [['198.51.100.10', 443]];
+	});
+	const second = getProxyResolutionRecord(env, null, 'coalesce.example.com', 'target.example.com', '00000000-0000-4000-8000-000000000000', async () => {
+		liveCalls++;
+		return [['198.51.100.11', 443]];
+	});
+
+	const [a, b] = await Promise.all([first, second]);
+	assert.equal(liveCalls, 1, 'simultaneous cold proxy resolution should share one live lookup');
+	assert.deepEqual(a.record.endpoints, [['198.51.100.10', 443]]);
+	assert.deepEqual(b.record.endpoints, [['198.51.100.10', 443]]);
+}
+
+{
+	let abortSeen = false;
+	await assert.rejects(
+		fetchWithTimeout('https://example.invalid/dns-query', { method: 'POST' }, 5, (_url, init) => new Promise((_, reject) => {
+			init.signal.addEventListener('abort', () => {
+				abortSeen = true;
+				reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+			}, { once: true });
+		})),
+		/aborted/
+	);
+	assert.equal(abortSeen, true, 'timeout should abort the underlying fetch');
+}
+
+{
+	const calls = [];
+	const result = await openStaggeredCandidates([
+		{ hostname: 'same.example.com', port: 443 },
+		{ hostname: 'same.example.com', port: 443 },
+	], async candidate => {
+		calls.push(candidate);
+		return { id: candidate.hostname, close() { this.closed = true; } };
+	}, { staggerMs: 1 });
+
+	assert.equal(calls.length, 1, 'duplicate host:port candidates should not be raced');
+	assert.equal(result.candidate.hostname, 'same.example.com');
+}
+
+{
+	const started = [];
+	const result = await openStaggeredCandidates([
+		{ hostname: 'slow.example.com', port: 443 },
+		{ hostname: 'fast.example.com', port: 443 },
+	], candidate => {
+		started.push(candidate.hostname);
+		if (candidate.hostname === 'slow.example.com') {
+			return new Promise(resolve => setTimeout(() => resolve({ id: 'slow', close() { this.closed = true; } }), 50));
+		}
+		return Promise.resolve({ id: 'fast', close() { this.closed = true; } });
+	}, { staggerMs: 5 });
+
+	assert.deepEqual(started, ['slow.example.com', 'fast.example.com']);
+	assert.equal(result.candidate.hostname, 'fast.example.com');
+}
+
+{
+	const events = [];
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send() { events.push('send'); },
+		close() {
+			events.push('close');
+			this.readyState = WebSocket.CLOSED;
+		},
+	};
+	const remoteSocket = {
+		readable: new ReadableStream({
+			start(controller) {
+				controller.error(new Error('early upstream failure'));
+			},
+		}),
+	};
+
+	// 请求已发送: true = a request was sent, then the upstream errored — that IS a real route failure and must
+	// fall over. (A no-request preconnect that errors would NOT retry — readError is no longer a stand-in for
+	// "a request was sent", so the first-byte-timeout cancellation can't masquerade as a failed route.)
+	await connectStreams(remoteSocket, webSocket, null, async () => {
+		events.push('retry');
+	}, 0, { wrapper: { 请求已发送: true } });
+
+	assert.deepEqual(events, ['retry'], 'an upstream error AFTER a request was sent should retry before closing the client socket');
+}
+
+{
+	const events = [];
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send() { events.push('send'); },
+		close() {
+			events.push('client-close');
+			this.readyState = WebSocket.CLOSED;
+		},
+	};
+	const remoteSocket = {
+		readable: new ReadableStream({
+			cancel() {
+				events.push('remote-readable-cancel');
+			},
+		}),
+		close() {
+			events.push('remote-close');
+		},
+	};
+
+	// 请求已发送: true = the client sent a request (e.g. ClientHello); a first-byte timeout is then a real
+	// blackhole and must fall over. (A no-request preconnect would NOT retry — covered by a separate test.)
+	await withTestTimeout(connectStreams(remoteSocket, webSocket, null, async () => {
+		events.push('retry-start');
+	}, 10, { wrapper: { 请求已发送: true } }), 250, 'first-byte fallback closes stale remote socket');
+
+	assert.equal(events.includes('remote-close'), true, 'first-byte fallback should close the stale direct socket');
+	assert.equal(events.includes('retry-start'), true, 'first-byte fallback should still run the retry callback');
+	assert.equal(events.indexOf('remote-close') < events.indexOf('retry-start'), true, 'stale direct socket should close before fallback opens a replacement');
+	assert.equal(events.includes('client-close'), false, 'first-byte fallback should not close the client bridge');
+}
+
+{
+	// D1: once a downlink byte reaches the client, connectStreams marks the shared wrapper so the upload
+	// queue's retry gate can refuse a reconnect-and-replay (which would splice a second response onto the
+	// partial one the client already received). This asserts the flag is set on first delivered byte.
+	const wrapper = { 已向客户端下发数据: false };
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = {
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1, 2, 3]));
+				controller.close();
+			},
+		}),
+	};
+	await withTestTimeout(connectStreams(remoteSocket, webSocket, null, null, 0, { wrapper }), 250, 'downlink-delivered flag');
+	assert.equal(wrapper.已向客户端下发数据, true, 'delivering a downlink byte to the client sets the wrapper flag that blocks unsafe upload retries');
+}
+
+{
+	// Proxy-path first-byte timeout: with retryFunc=null and firstByteTimeoutMs>0, a relay that connects
+	// but never sends a byte must be cancelled + closed (so the client re-dials) and scored via onNoData —
+	// NOT retried (there is no worker-side fallback on the proxy path, so it must never replay). Without the
+	// fix (timer required a retryFunc) this read would hang forever and the test would time out.
+	const events = [];
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send() { events.push('send'); },
+		close() { events.push('client-close'); this.readyState = WebSocket.CLOSED; },
+	};
+	let cancelled = false;
+	const remoteSocket = {
+		readable: new ReadableStream({
+			cancel() { cancelled = true; events.push('remote-cancel'); },
+		}),
+	};
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, null, 30, { wrapper: { 请求已发送: true }, onNoData: () => events.push('no-data') }),
+		250, 'proxy-path first-byte timeout closes a blackholed relay',
+	);
+	assert.equal(cancelled, true, 'first-byte timeout cancels the read even without a retryFunc (proxy path)');
+	assert.equal(events.includes('no-data'), true, 'blackholed proxy relay fires onNoData for endpoint health scoring');
+	assert.equal(events.includes('client-close'), true, 'blackholed proxy relay closes the client so it re-dials');
+}
+
+{
+	// No-request PRECONNECT: the client opened the tunnel + sent the target header but never sent a request
+	// (请求已发送 stays false). When the remote cleanly closes with no data, this must NOT poison the direct
+	// route (onNoData) nor spend a ProxyIP fallback — a preconnect is not a blackhole. (Live capture showed
+	// these idle-closing at 30–43s and mis-triggering fallbacks that pushed real loads onto the slow proxy.)
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }), close() { events.push('remote-close'); } };
+	const wrapper = {}; // 请求已发送 is falsy -> a no-request preconnect
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0, { wrapper, onNoData: () => events.push('no-data') }),
+		250, 'no-request preconnect closes without poisoning the route',
+	);
+	assert.equal(events.includes('no-data'), false, 'a no-request preconnect must NOT fire onNoData (no direct-route cache poison)');
+	assert.equal(events.includes('retry'), false, 'a no-request preconnect must NOT fall back to ProxyIP');
+	assert.equal(wrapper.closeHint, 'no_request_idle', 'a no-request clean close is classified no_request_idle');
+}
+
+{
+	// CRITICAL regression (the bug the 3000ms DIRECT_FIRST_BYTE_TIMEOUT_MS setting exposed): the first-byte
+	// watchdog must NOT arm while 请求已发送 is false. With a timeout set but no request sent, the timer must
+	// never fire — otherwise its reader cancellation looked like a route failure and a Telegram preconnect
+	// poisoned the direct cache + fell back to slow ProxyIP (70/76 first-byte timeouts in the capture).
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	let cancelled = false;
+	const remoteSocket = { readable: new ReadableStream({ cancel() { cancelled = true; } }), close() { events.push('remote-close'); } };
+	const wrapper = {}; // no request sent
+	const p = connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 20, { wrapper, onNoData: () => events.push('no-data') });
+	await new Promise(r => setTimeout(r, 90)); // 4.5x the 20ms timeout — a preconnect timer would have fired long ago
+	assert.equal(cancelled, false, 'the first-byte timer must NOT fire on a no-request preconnect even when a timeout is configured');
+	assert.equal(events.includes('no-data'), false, 'no route-failure scoring for a preconnect');
+	assert.equal(events.includes('retry'), false, 'no ProxyIP fallback for a preconnect');
+	// Now a request arrives -> the watchdog arms and fires, ending the (now genuinely blackholed) read.
+	wrapper.请求已发送 = true; wrapper.记录上行活动?.();
+	await withTestTimeout(p, 250, 'timer arms once a request is sent');
+	assert.equal(cancelled, true, 'once a request is sent, the first-byte watchdog arms and fires on a real blackhole');
+}
+
+{
+	// Upload-aware watchdog: while the uplink signals activity (client streaming an UPLOAD upstream while
+	// the remote is legitimately silent), the first-byte timer keeps resetting so the upload is NOT killed;
+	// once activity stops, it fires — preserving blackhole recovery. connectStreams exposes the reset via
+	// the shared wrapper (pipeMeta.wrapper.记录上行活动), which the upload queue calls on each upstream write.
+	// 请求已发送: true -> a request was sent (so the first-byte watchdog is armed); the upload keeps it re-armed.
+	const wrapper = { 请求已发送: true };
+	let cancelled = false;
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ cancel() { cancelled = true; } }) };
+	const p = connectStreams(remoteSocket, webSocket, null, null, 30, { wrapper });
+	assert.equal(typeof wrapper.记录上行活动, 'function', 'connectStreams exposes the uplink-activity reset on the wrapper');
+	let stop = false;
+	const beat = (async () => { while (!stop) { wrapper.记录上行活动?.(); await new Promise(r => setTimeout(r, 10)); } })();
+	await new Promise(r => setTimeout(r, 90));
+	assert.equal(cancelled, false, 'first-byte timer does NOT fire while uplink activity is signaled (upload survives silent downlink)');
+	stop = true; await beat;
+	await withTestTimeout(p, 250, 'first-byte timer fires once uplink activity stops');
+	assert.equal(cancelled, true, 'first-byte timer still fires after uplink activity stops (blackhole recovery preserved)');
+}
+
+{
+	// Direct-path close-only first-byte timeout: when the first packet carried data (首字节超时仅关闭=true),
+	// a blackhole (first-byte TIMEOUT) must CLOSE the stream WITHOUT replaying the (non-idempotent) first
+	// packet — while a socket close/EOF may still fall back. This asserts the timeout path is close-only.
+	const events = [];
+	let cancelled = false;
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { events.push('client-close'); this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ cancel() { cancelled = true; } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 30, { wrapper: { 请求已发送: true }, 首字节超时仅关闭: true, onNoData: () => events.push('no-data') }),
+		250, 'close-only first-byte timeout for a data-carrying first packet',
+	);
+	assert.equal(cancelled, true, 'first-byte timeout cancels the blackholed read');
+	assert.equal(events.includes('no-data'), true, 'onNoData fires so the direct route is recorded as failed');
+	assert.equal(events.includes('retry'), false, 'close-only mode does NOT replay the first packet on a timeout');
+	assert.equal(events.includes('client-close'), true, 'close-only mode closes the client so it re-dials');
+}
+
+{
+	// ...but in close-only mode, a socket CLOSE (not a timeout) with no data must STILL fall back to ProxyIP.
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 30, { wrapper: { 请求已发送: true }, 首字节超时仅关闭: true, onNoData: () => events.push('no-data') }),
+		250, 'close-only mode still falls back on a socket close',
+	);
+	assert.equal(events.includes('retry'), true, 'a socket close (not a timeout) still falls back to ProxyIP even in close-only mode');
+}
+
+{
+	// Idle-before-first-byte: an uplink write BEFORE the first downlink byte must not arm the idle watchdog
+	// (only the first-byte watchdog governs pre-response). With IDLE_TIMEOUT_MS (1000, clamped min) below
+	// FIRST_BYTE_TIMEOUT_MS (2500), the old code closed at ~1000ms; now the connection survives past it.
+	let cancelled = false, ctrl = null;
+	const wrapper = {};
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { ctrl = c; }, cancel() { cancelled = true; } }) };
+	const p = connectStreams(remoteSocket, webSocket, null, null, 2500, { env: { IDLE_TIMEOUT_MS: '1000' }, wrapper });
+	wrapper.记录上行活动?.(); // one uplink write, before any downlink byte
+	await new Promise(r => setTimeout(r, 1300)); // past the 1000ms idle deadline, well before the 2500ms first-byte one
+	assert.equal(cancelled, false, 'a pre-first-byte uplink write does NOT arm the idle timer (survives past IDLE_TIMEOUT_MS)');
+	try { ctrl.close(); } catch (e) { } // end the pipe so its promise resolves
+	await withTestTimeout(p, 250, 'pipe ends cleanly after the remote closes');
+}
+
+{
+	// Downlink backpressure must not deadlock: the gRPC/XHTTP handlers pump the whole tunnel through a
+	// Response ReadableStream whose downlink backpressure is released ONLY by pull(). Per the WHATWG Streams
+	// spec, pull() is not called until start()'s promise settles — so the tunnel loop must run in a DETACHED
+	// task (start() returns immediately), NOT inside an async start(). This replicates the handlers' exact
+	// 释放下行背压 / 等待下行可写 / pull handshake and proves the detached form drains under a slow consumer
+	// while the async-start form stalls at the HWM. Guards against regressing back to `async start`.
+	const HWM = 4096, CHUNK = 1024, N = 40;
+	const makeStream = (detached) => {
+		let 下行控制器 = null, 下行拉取等待者 = [];
+		const 释放下行背压 = () => { const w = 下行拉取等待者; 下行拉取等待者 = []; for (const r of w) r(); };
+		const 等待下行可写 = () => {
+			const c = 下行控制器;
+			if (!c || typeof c.desiredSize !== 'number' || c.desiredSize > 0) return undefined;
+			return new Promise(resolve => 下行拉取等待者.push(resolve));
+		};
+		const 运行 = async (controller) => {
+			for (let i = 0; i < N; i++) { controller.enqueue(new Uint8Array(CHUNK)); await 等待下行可写(); }
+			controller.close();
+		};
+		return new ReadableStream({
+			start(controller) {
+				下行控制器 = controller;
+				if (detached) { void 运行(controller).catch(() => { }); return; }
+				return 运行(controller); // buggy: start()'s promise stays pending -> pull() never fires
+			},
+			pull() { 释放下行背压(); },
+		}, new ByteLengthQueuingStrategy({ highWaterMark: HWM }));
+	};
+	const drain = async (stream, budgetMs) => {
+		const reader = stream.getReader();
+		const TIMEOUT = Symbol('t');
+		let got = 0;
+		while (true) {
+			const res = await Promise.race([reader.read(), new Promise(r => setTimeout(() => r(TIMEOUT), budgetMs))]);
+			if (res === TIMEOUT) { try { reader.cancel(); } catch (e) { } return { drained: false, got }; }
+			if (res.done) return { drained: true, got };
+			got++;
+			await new Promise(r => setTimeout(r, 2)); // slow consumer -> queue fills past the HWM
+		}
+	};
+	const fixed = await drain(makeStream(true), 300);
+	assert.equal(fixed.drained, true, 'detached-task downlink drains fully past the HWM under a slow consumer');
+	assert.equal(fixed.got, N, 'detached-task downlink delivers every chunk');
+	const buggy = await drain(makeStream(false), 300);
+	assert.equal(buggy.drained, false, 'async-start downlink deadlocks at the HWM (pull() never fires) — the bug this fix prevents');
+}
+
+{
+	// P0.5: a CLIENT-initiated close before the first downlink byte must not be scored as a route failure
+	// (onNoData) nor trigger a ProxyIP fallback dial — the client has already gone away.
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0,
+			{ wrapper: { 客户端已关闭: true }, onNoData: () => events.push('no-data') }),
+		250, 'client-close pipe settles',
+	);
+	assert.equal(events.includes('no-data'), false, 'a client-initiated close must not record a direct-route failure');
+	assert.equal(events.includes('retry'), false, 'a client-initiated close must not start a ProxyIP fallback dial');
+}
+
+{
+	// Control for the two guards below: a genuine remote no-data close (client still present, nothing sent
+	// beyond the first packet) DOES record the failure and DOES fall back to ProxyIP.
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0,
+			{ wrapper: { 请求已发送: true }, onNoData: () => events.push('no-data') }),
+		250, 'no-data pipe settles',
+	);
+	assert.equal(events.includes('no-data'), true, 'a genuine remote no-data close records the direct-route failure');
+	assert.equal(events.includes('retry'), true, 'a genuine remote no-data close falls back to ProxyIP');
+}
+
+{
+	// P0.2: once a LATER uplink chunk has reached the remote (已向远端发送数据), a no-data close must NOT
+	// replay-retry — the fallback can only replay the first packet, so those later bytes would be lost. The
+	// route failure is still recorded (the client is present and the direct route genuinely blackholed).
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0,
+			{ wrapper: { 已向远端发送数据: true, 请求已发送: true }, onNoData: () => events.push('no-data') }),
+		250, 'later-uplink pipe settles',
+	);
+	assert.equal(events.includes('no-data'), true, 'a blackhole after a later uplink write still records the direct-route failure');
+	assert.equal(events.includes('retry'), false, 'a blackhole after a later uplink write must NOT replay-retry (would lose the later bytes)');
+}
+
+{
+	// Replay-safe first-packet classifier: only an empty packet or a single standalone TLS ClientHello record
+	// may be replayed to a ProxyIP fallback. Everything else is treated as possibly non-idempotent.
+	const clientHello = new Uint8Array([0x16, 0x03, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x04, 0xaa, 0xbb, 0xcc, 0xdd]);
+	assert.equal(isReplayableTlsFirstPacket(clientHello), true, 'a standalone TLS ClientHello record is replay-safe');
+	assert.equal(isReplayableTlsFirstPacket(new Uint8Array([0x47, 0x45, 0x54, 0x20, 0x2f])), false, 'a plaintext HTTP request is not replay-safe');
+	// ClientHello followed by a second record (e.g. TLS 1.3 0-RTT early data) must not be replayed.
+	assert.equal(isReplayableTlsFirstPacket(new Uint8Array([...clientHello, 0x17, 0x03, 0x03, 0x00, 0x01, 0x00])), false, 'a ClientHello with a trailing record is not replay-safe');
+	assert.equal(isReplayableTlsFirstPacket(new Uint8Array([0x16, 0x03])), false, 'a too-short packet is not replay-safe');
+}
+
+{
+	// The connectStreams retry is refused when the first packet is not replay-safe (可重放首包 === false):
+	// on a no-data close it must close, not replay-fallback. onNoData still records the route failure.
+	const events = [];
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0,
+			{ wrapper: { 请求已发送: true }, 可重放首包: false, onNoData: () => events.push('no-data') }),
+		250, 'non-replayable pipe settles',
+	);
+	assert.equal(events.includes('no-data'), true, 'a non-replayable first packet still records the direct-route failure');
+	assert.equal(events.includes('retry'), false, 'a non-replayable first packet must NOT replay-fallback (close and let the client re-dial)');
+}
+
+{
+	// Stale-pipeline guard: once the wrapper points at a DIFFERENT socket (a reconnect installed a
+	// replacement), this pipe is stale and must not run onNoData/retry or close the shared client ws.
+	const events = [];
+	let wsClosed = false;
+	const webSocket = { readyState: WebSocket.OPEN, send() { }, close() { wsClosed = true; this.readyState = WebSocket.CLOSED; } };
+	const remoteSocket = { readable: new ReadableStream({ start(c) { c.close(); } }) };
+	const wrapper = { socket: { /* a different, newer socket */ } };
+	await withTestTimeout(
+		connectStreams(remoteSocket, webSocket, null, async () => { events.push('retry'); }, 0,
+			{ wrapper, onNoData: () => events.push('no-data') }),
+		250, 'stale pipe settles',
+	);
+	assert.equal(events.length, 0, 'a stale pipe must not fire onNoData or retry');
+	assert.equal(wsClosed, false, 'a stale pipe must not close the shared client transport (the current pipe owns it)');
+}
+
+{
+	// gRPC frame-length must be parsed as UNSIGNED: a header whose top length byte is >= 0x80 previously went
+	// negative and slipped past the size cap. It must now be rejected as too large.
+	assert.throws(() => readGrpcFrameLength(new Uint8Array([0, 0x80, 0, 0, 0])), /gRPC frame too large/, 'a 0x80 top length byte is rejected, not read as a negative length');
+	assert.equal(readGrpcFrameLength(new Uint8Array([0, 0, 0, 0x10, 0x00])), 0x1000, 'a normal length parses correctly');
+	// gRPC framing is parsed BEFORE UUID auth, so these are pre-auth guards: reject a nonzero compression
+	// flag, and cap protobuf fields per frame (a hostile many-tiny-fields frame otherwise burns parser CPU).
+	assert.throws(() => readGrpcFrameLength(new Uint8Array([1, 0, 0, 0, 1])), /compression flag/, 'a nonzero gRPC compression flag is rejected');
+	assert.deepEqual(unwrapGrpcMessagePayloads(new Uint8Array([0x0a, 0x02, 0xaa, 0xbb])).map(p => [...p]), [[0xaa, 0xbb]], 'a normal single-field frame unwraps');
+	{
+		const tooManyFields = new Uint8Array(4097 * 2);
+		for (let i = 0; i < 4097; i++) tooManyFields[i * 2] = 0x0a; // 4097 zero-length protobuf fields
+		assert.throws(() => unwrapGrpcMessagePayloads(tooManyFields), /too many protobuf fields/, 'a frame exceeding the per-frame field cap is rejected');
+	}
+	// An overlong (6-byte) protobuf varint length must be rejected, not silently mis-parsed by a 32-bit
+	// wrapping shift (`<< 35` == `<< 3`).
+	assert.throws(() => unwrapGrpcMessagePayloads(new Uint8Array([0x0a, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00])), /exceeds uint32|too long/, 'an overlong protobuf varint length is rejected');
+	// Single-allocation encoder must emit the exact gRPC wire format: 5-byte length-prefixed header,
+	// protobuf field-1 tag 0x0a, varint length, then the payload.
+	assert.deepEqual([...encodeGrpcDataFrame(new Uint8Array([0xaa, 0xbb]))], [0x00, 0x00, 0x00, 0x00, 0x04, 0x0a, 0x02, 0xaa, 0xbb], 'encodeGrpcDataFrame emits the exact expected frame bytes');
+	assert.deepEqual(parseGrpcFrameChunk(new Uint8Array(0), encodeGrpcDataFrame(new Uint8Array([1, 2, 3, 4, 5]))).payloads.map(p => [...p]), [[1, 2, 3, 4, 5]], 'encode/parse round-trips the payload');
+	{
+		// Zero-copy downlink framing: enqueuing encodeGrpcFramePrefix(len) followed by the payload VIEW must
+		// produce byte-identical wire output to encodeGrpcDataFrame (which copies the whole payload). This is
+		// what lets the heavy download path skip the per-byte copy that was blowing the 10ms CPU budget.
+		for (const size of [1, 5, 127, 128, 4096, 16384, 32768, 70000]) {
+			const payload = new Uint8Array(size);
+			for (let i = 0; i < size; i++) payload[i] = (i * 31 + 7) & 0xff;
+			const prefix = encodeGrpcFramePrefix(size);
+			const stitched = new Uint8Array(prefix.byteLength + size);
+			stitched.set(prefix, 0);
+			stitched.set(payload, prefix.byteLength);
+			assert.deepEqual([...stitched], [...encodeGrpcDataFrame(payload)], `prefix+view is byte-identical to a copied frame (size=${size})`);
+			// ...and it still parses back to exactly the original payload.
+			assert.deepEqual([...parseGrpcFrameChunk(new Uint8Array(0), stitched).payloads[0]], [...payload], `prefix+view round-trips (size=${size})`);
+		}
+	}
+	{
+		// Two-stage frame cap. gRPC framing is parsed BEFORE UUID auth, so an unauthenticated peer must not be
+		// able to make the parser reassemble a multi-MB frame: an INCOMPLETE frame is legitimately retained while
+		// waiting for the rest, so releasing consumed tails does not help this case — only a smaller cap does.
+		const 宣告4MB = new Uint8Array([0, 0x00, 0x40, 0x00, 0x00]); // gRPC header declaring a 4MiB message
+		assert.throws(() => parseGrpcFrameChunk(new Uint8Array(0), 宣告4MB, 256 * 1024), /frame too large/,
+			'a 4MiB frame is rejected under the pre-auth cap instead of being accumulated');
+		// The same frame is accepted (kept pending) once authenticated, under the default 4MiB cap.
+		const authed = parseGrpcFrameChunk(new Uint8Array(0), 宣告4MB);
+		assert.equal(authed.payloads.length, 0, 'an incomplete frame yields no payloads yet');
+		assert.equal(authed.pending.byteLength, 5, 'the authenticated path still accumulates the large frame');
+		// A normal-sized first packet (VLESS header + ClientHello is ~2-3KiB) passes the pre-auth cap untouched.
+		const 首包 = encodeGrpcDataFrame(new Uint8Array(2500));
+		assert.equal(parseGrpcFrameChunk(new Uint8Array(0), 首包, 256 * 1024).payloads[0].byteLength, 2500,
+			'a realistic first packet is unaffected by the pre-auth cap');
+	}
+
+	{
+		// A fully-consumed frame must RELEASE its reassembly backing buffer. `pending: merged.subarray(offset)`
+		// left a zero-length view still pinning the whole (2x-headroom) allocation — a pre-auth memory
+		// amplification vector, since gRPC framing is parsed before UUID auth.
+		const big = encodeGrpcDataFrame(new Uint8Array(256 * 1024));
+		// Feed it split so the parser builds an owned, oversized reassembly buffer, then completes the frame.
+		const firstHalf = parseGrpcFrameChunk(new Uint8Array(0), big.subarray(0, 64));
+		const done = parseGrpcFrameChunk(firstHalf.pending, big.subarray(64));
+		assert.equal(done.payloads.length, 1, 'the split frame reassembles');
+		assert.equal(done.payloads[0].byteLength, 256 * 1024, 'payload survives intact');
+		assert.equal(done.pending.byteLength, 0, 'the frame was fully consumed');
+		assert.ok(done.pending.buffer.byteLength < 4096, `a consumed frame must not pin its reassembly buffer (pinned ${done.pending.buffer.byteLength}B)`);
+		// A small leftover tail is copied out rather than pinning the big buffer.
+		const withTail = parseGrpcFrameChunk(new Uint8Array(0), new Uint8Array([...big, 0x00, 0x00]));
+		assert.equal(withTail.pending.byteLength, 2, 'the incomplete tail is retained');
+		assert.ok(withTail.pending.buffer.byteLength < 4096, 'a small tail is copied out of the large backing buffer');
+	}
+
+	{
+		// Per-chunk frame caps (pre-auth CPU-DoS guards). Real xray "gun" traffic carries a handful of frames
+		// per chunk (bulk data rides in few large frames), so both caps are far above legitimate use.
+		// (a) empty (zero-payload) 5-byte frames — the cheapest flood — are capped tight.
+		const emptyFlood = new Uint8Array(65 * 5); // 65 all-zero frames -> one past GRPC_MAX_EMPTY_FRAMES_PER_CHUNK (64)
+		assert.throws(() => parseGrpcFrameChunk(new Uint8Array(0), emptyFlood), /too many empty frames/, 'an empty-frame flood is rejected');
+		const emptyOk = new Uint8Array(64 * 5); // exactly at the empty cap
+		assert.deepEqual(parseGrpcFrameChunk(new Uint8Array(0), emptyOk).payloads, [], '64 empty frames (at the cap) still parse to no payloads');
+		// (b) total frames per chunk (incl. tiny non-empty ones) are capped (4096).
+		const one = encodeGrpcDataFrame(new Uint8Array([7])); // one valid single-field frame
+		const many = new Uint8Array(one.byteLength * 4097);
+		for (let i = 0; i < 4097; i++) many.set(one, i * one.byteLength);
+		assert.throws(() => parseGrpcFrameChunk(new Uint8Array(0), many), /too many frames/, 'a chunk exceeding the total per-chunk frame cap is rejected');
+	}
+}
+
+{
+	const events = [];
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send() { events.push('send'); },
+		close() {
+			events.push('close');
+			this.readyState = WebSocket.CLOSED;
+		},
+	};
+	const remoteSocket = {
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1, 2, 3]));
+				controller.close();
+			},
+		}),
+	};
+
+	await connectStreams(remoteSocket, webSocket, null, null);
+
+	assert.deepEqual(events, ['send', 'close'], 'normal upstream EOF after data should close the client bridge');
+}
+
+{
+	const sentLengths = [];
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send(payload) { sentLengths.push(payload.byteLength); },
+		close() { this.readyState = WebSocket.CLOSED; },
+	};
+	const remoteSocket = {
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array(4097).fill(7));
+				controller.close();
+			},
+		}),
+	};
+	await connectStreams(remoteSocket, webSocket, null, null, 0, { env: { DOWNLINK_GRAIN_PACKET_BYTES: '4096' } });
+	assert.deepEqual(sentLengths, [4096, 1], 'connectStreams should use env-tuned downlink grain size on the WS/TCP path');
+}
+
+{
+	// Force the DoH primary path to fail so this exercises the DNS-over-TCP fallback behavior.
+	const 原始fetch = globalThis.fetch;
+	globalThis.fetch = () => Promise.reject(new Error('DoH disabled in test'));
+	let upstreamClosed = false;
+	const writes = [];
+	const sent = [];
+	// Real single-question DNS: tunneled queries are validated and TCP replies are matched to their query.
+	const dnsQuery = new Uint8Array([0x33, 0x44, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const dnsReply = new Uint8Array([0x33, 0x44, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const withLen = (m) => { const f = new Uint8Array(2 + m.length); f[0] = m.length >> 8; f[1] = m.length & 0xff; f.set(m, 2); return f; };
+	const queryFrame = withLen(dnsQuery);
+	const responseFrame = withLen(dnsReply);
+	const tcpSocket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(responseFrame);
+			},
+		}),
+		writable: new WritableStream({
+			write(chunk) {
+				writes.push(new Uint8Array(chunk));
+			},
+		}),
+		closed: new Promise(() => {}),
+		close() {
+			upstreamClosed = true;
+		},
+	};
+	const request = {
+		env: { DNS_SERVER: '1.1.1.1' },
+		fetcher: {
+			connect(address) {
+				assert.deepEqual(address, { hostname: '1.1.1.1', port: 53 });
+				return tcpSocket;
+			},
+		},
+	};
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send(payload) {
+			sent.push(new Uint8Array(payload));
+		},
+	};
+
+	try {
+		await withTestTimeout(forwardataudp(queryFrame, webSocket, new Uint8Array([0, 0]), request), 80, 'DNS TCP response should not wait for upstream close');
+
+		assert.deepEqual(writes, [queryFrame]);
+		assert.deepEqual(sent, [new Uint8Array([0, 0, ...responseFrame])]);
+		assert.equal(upstreamClosed, true, 'DNS TCP socket should be closed after one complete response frame');
+	} finally {
+		globalThis.fetch = 原始fetch;
+	}
+}
+
+{
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = () => Promise.reject(new Error('DoH disabled in test'));
+	let upstreamClosed = false;
+	const writes = [];
+	const sent = [];
+	// Real single-question DNS messages: the worker validates every tunneled query and now matches each
+	// DNS-over-TCP reply back to its query (RFC 7766 allows out-of-order pipelined replies), so synthetic
+	// non-DNS payloads no longer exercise this path.
+	const mkQuery = (id) => new Uint8Array([id >> 8, id & 0xff, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const mkReply = (id) => new Uint8Array([id >> 8, id & 0xff, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const frame = (m) => { const f = new Uint8Array(2 + m.length); f[0] = m.length >> 8; f[1] = m.length & 0xff; f.set(m, 2); return f; };
+	const join = (...parts) => { const t = parts.reduce((s, p) => s + p.length, 0); const o = new Uint8Array(t); let k = 0; for (const p of parts) { o.set(p, k); k += p.length; } return o; };
+	const queryBatch = join(frame(mkQuery(0x1111)), frame(mkQuery(0x2222)));
+	const responseFrames = join(frame(mkReply(0x1111)), frame(mkReply(0x2222)));
+	const tcpSocket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				// split mid-message so the reader must reassemble across TCP chunks
+				controller.enqueue(responseFrames.subarray(0, 7));
+				controller.enqueue(responseFrames.subarray(7));
+			},
+		}),
+		writable: new WritableStream({
+			write(chunk) {
+				writes.push(new Uint8Array(chunk));
+			},
+		}),
+		closed: new Promise(() => {}),
+		close() {
+			upstreamClosed = true;
+		},
+	};
+	const request = {
+		env: { DNS_SERVER: '1.1.1.1' },
+		fetcher: { connect: () => tcpSocket },
+	};
+	const webSocket = {
+		readyState: WebSocket.OPEN,
+		send(payload) {
+			sent.push(new Uint8Array(payload));
+		},
+	};
+	try {
+		await withTestTimeout(forwardataudp(queryBatch, webSocket, new Uint8Array([0, 0]), request), 100, 'DNS TCP multi-frame response');
+		assert.deepEqual(writes, [queryBatch], 'the whole query batch is written upstream once');
+		assert.deepEqual(sent, [join(new Uint8Array([0, 0]), responseFrames)], 'DNS TCP fallback should return one response frame per query frame, matched to its query');
+		assert.equal(upstreamClosed, true);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	// DoH primary path: a length-prefixed query is POSTed as application/dns-message and the raw
+	// response is returned re-framed with a 2-byte length prefix, then delivered with the resp header.
+	const 原始fetch = globalThis.fetch;
+	const calls = [];
+	// Real single-question query and its matching answer: tunneled queries are validated and DoH answers are
+	// correlated to the query that was sent.
+	const dohQuery = new Uint8Array([0x56, 0x78, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const dohReply = new Uint8Array([0x56, 0x78, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const dohFrame = new Uint8Array([0, dohQuery.length, ...dohQuery]);
+	globalThis.fetch = (url, init) => {
+		calls.push({ url, init });
+		return Promise.resolve({ ok: true, status: 200, arrayBuffer: async () => dohReply.buffer.slice(dohReply.byteOffset, dohReply.byteOffset + dohReply.byteLength) });
+	};
+	const sent = [];
+	const webSocket = { readyState: WebSocket.OPEN, send(p) { sent.push(new Uint8Array(p)); } };
+	const request = { env: {}, fetcher: { connect() { throw new Error('TCP should not be used when DoH succeeds'); } } };
+	try {
+		await withTestTimeout(forwardataudp(dohFrame, webSocket, new Uint8Array([0, 0]), request), 80, 'DoH DNS forward');
+		assert.equal(calls.length, 1, 'one DoH request is made for one query');
+		assert.equal(calls[0].init.method, 'POST', 'DoH uses POST');
+		assert.equal(calls[0].init.headers['content-type'], 'application/dns-message', 'DoH sends application/dns-message');
+		assert.deepEqual([...new Uint8Array(calls[0].init.body)], [...dohQuery], 'DoH body is the raw query without the TCP length prefix');
+		assert.deepEqual(sent, [new Uint8Array([0, 0, 0, dohReply.length, ...dohReply])], 'DoH response is re-framed and delivered with the resp header');
+	} finally {
+		globalThis.fetch = 原始fetch;
+	}
+}
+
+{
+	const originalFetch = globalThis.fetch;
+	let inFlight = 0, maxInFlight = 0;
+	const calls = [];
+	// Real single-question queries; the resolver echoes each one back as its answer (ID + question must match,
+	// which is what the worker now verifies). The first query is answered slower so ordering is still proven.
+	const mkQ = (id) => new Uint8Array([0x00, id, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const q1 = mkQ(0x12), q2 = mkQ(0x34);
+	const batch = new Uint8Array([0, q1.length, ...q1, 0, q2.length, ...q2]);
+	const replyFor = (body) => { const r = new Uint8Array(body); r[2] = 0x81; r[3] = 0x80; return r; };
+	globalThis.fetch = async (url, init) => {
+		inFlight++;
+		maxInFlight = Math.max(maxInFlight, inFlight);
+		const body = new Uint8Array(init.body);
+		calls.push([...body]);
+		await new Promise(resolve => setTimeout(resolve, body[1] === 0x12 ? 25 : 5));
+		inFlight--;
+		return new Response(replyFor(body), {
+			status: 200,
+			headers: { 'Content-Type': 'application/dns-message' },
+		});
+	};
+	const sent = [];
+	const webSocket = { readyState: WebSocket.OPEN, send(p) { sent.push(new Uint8Array(p)); } };
+	const request = { env: {}, fetcher: { connect() { throw new Error('TCP should not be used when DoH succeeds'); } } };
+	try {
+		await withTestTimeout(forwardataudp(batch, webSocket, new Uint8Array([0, 0]), request), 200, 'DoH DNS batch forward');
+		assert.equal(maxInFlight > 1, true, 'multiple DNS query frames should be sent to DoH concurrently');
+		assert.deepEqual(calls, [[...q1], [...q2]]);
+		assert.deepEqual(sent, [new Uint8Array([0, 0, 0, q1.length, ...replyFor(q1), 0, q2.length, ...replyFor(q2)])], 'batched DoH responses should preserve query order');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	// VLESS/plain-UDP DNS reassembly: a length-prefixed query frame split across two forwardataudp calls
+	// (chunk boundaries don't align with tunneled frame boundaries) must reassemble via a shared
+	// udpContext — the Trojan-UDP path already buffers, the VLESS path previously dropped the tail.
+	const originalFetch = globalThis.fetch;
+	const calls = [];
+	const splitQuery = new Uint8Array([0x9a, 0xbc, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const splitReply = new Uint8Array([0x9a, 0xbc, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const splitFrame = new Uint8Array([0, splitQuery.length, ...splitQuery]);
+	globalThis.fetch = (url, init) => {
+		calls.push([...new Uint8Array(init.body)]);
+		return Promise.resolve(new Response(splitReply, { status: 200, headers: { 'Content-Type': 'application/dns-message' } }));
+	};
+	const sent = [];
+	const webSocket = { readyState: WebSocket.OPEN, send(p) { sent.push(new Uint8Array(p)); } };
+	const request = { env: {}, fetcher: { connect() { throw new Error('TCP should not be used when DoH succeeds'); } } };
+	const udpContext = { 缓存: new Uint8Array(0) };
+	try {
+		// One length-prefixed query split mid-message across two calls.
+		await withTestTimeout(forwardataudp(splitFrame.subarray(0, 6), webSocket, new Uint8Array([0, 0]), request, null, udpContext), 80, 'split UDP frame part 1');
+		assert.equal(calls.length, 0, 'no DoH request until the frame is complete');
+		assert.equal(sent.length, 0, 'nothing sent until the frame is complete');
+		await withTestTimeout(forwardataudp(splitFrame.subarray(6), webSocket, new Uint8Array([0, 0]), request, null, udpContext), 80, 'split UDP frame part 2');
+		assert.equal(calls.length, 1, 'exactly one DoH request once the frame completes');
+		assert.deepEqual(calls[0], [...splitQuery], 'reassembled query matches the original unsplit frame');
+		assert.deepEqual(sent, [new Uint8Array([0, 0, 0, splitReply.length, ...splitReply])], 'response delivered once, correctly framed');
+		assert.equal(udpContext.缓存.byteLength, 0, 'reassembly buffer empty after a fully-consumed frame');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	// E: a partial-batch DoH failure must not re-spend subrequests on frames that already resolved. Frame
+	// 0x12 succeeds on the primary; 0x34 fails on the primary; only 0x34 is retried against the fallback,
+	// and 0x12 is never re-fetched.
+	const originalFetch = globalThis.fetch;
+	const primaryCalls = [], fallbackCalls = [];
+	// Real single-question queries, identified by their transaction ID; the resolver echoes each query back
+	// as its answer, which is what the worker now requires.
+	const mkQ = (id) => new Uint8Array([0x00, id, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0x00, 0, 1, 0, 1]);
+	const qa = mkQ(0x12), qb = mkQ(0x34);
+	const batch = new Uint8Array([0, qa.length, ...qa, 0, qb.length, ...qb]);
+	const replyFor = (body) => { const r = new Uint8Array(body); r[2] = 0x81; r[3] = 0x80; return r; };
+	globalThis.fetch = async (url, init) => {
+		const body = new Uint8Array(init.body);
+		const query = [...body];
+		const isFallback = String(url).includes('f.example');
+		(isFallback ? fallbackCalls : primaryCalls).push(query);
+		if (!isFallback && body[1] === 0x34) throw new Error('primary DoH failed for this frame');
+		return new Response(replyFor(body), {
+			status: 200,
+			headers: { 'Content-Type': 'application/dns-message' },
+		});
+	};
+	const sent = [];
+	const webSocket = { readyState: WebSocket.OPEN, send(p) { sent.push(new Uint8Array(p)); } };
+	const request = { env: { DOH_URL: 'https://p.example/dns-query', DOH_URL_FALLBACK: 'https://f.example/dns-query' }, fetcher: { connect() { throw new Error('TCP should not be used when DoH resolves all frames'); } } };
+	try {
+		await withTestTimeout(forwardataudp(batch, webSocket, new Uint8Array([0, 0]), request), 200, 'DoH partial-batch carry-over');
+		assert.deepEqual(primaryCalls.slice().sort((a, b) => a[1] - b[1]), [[...qa], [...qb]], 'primary DoH is tried for both frames');
+		assert.deepEqual(fallbackCalls, [[...qb]], 'fallback only re-fetches the frame that failed on the primary (the first is not re-fetched)');
+		assert.deepEqual(sent, [new Uint8Array([0, 0, 0, qa.length, ...replyFor(qa), 0, qb.length, ...replyFor(qb)])], 'both frames delivered in original order');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	// DNS wire-cache TTL parsing: a positive answer is cached for its real record TTL (clamped to
+	// [30s, 5min]) instead of a flat 30s, so stable domains aren't re-resolved every 30s. Fail-safe: a
+	// short/malformed message returns the 30s floor. Response: header + question foo.com A IN + one A
+	// answer via a compression pointer, with the TTL varied per case.
+	const mkResp = (ttlBytes) => new Uint8Array([
+		0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0,                 // header: NOERROR, QD=1, AN=1
+		3, 0x66, 0x6f, 0x6f, 3, 0x63, 0x6f, 0x6d, 0, 0, 1, 0, 1, // question: foo.com A IN
+		0xc0, 0x0c, 0, 1, 0, 1, ...ttlBytes, 0, 4, 1, 2, 3, 4,   // answer: ptr, A, IN, TTL, rdlen=4, 1.2.3.4
+	]);
+	assert.equal(dnsAnswerMinTtlMs(mkResp([0, 0, 1, 0x2c])), 300000, 'a 300s record TTL caches for 300s');
+	// CHANGED (was: a below-floor TTL clamps UP to the 30s minimum). Holding a 10s answer for 30s meant
+	// handing out an address up to 20s after its authority retired it — for a rotating CDN that surfaces as
+	// a connection to a dead endpoint. A parsed TTL is now honoured exactly.
+	assert.equal(dnsAnswerMinTtlMs(mkResp([0, 0, 0, 10])), 10000, 'a short TTL is honoured, never extended past what the authority allowed');
+	assert.equal(dnsAnswerMinTtlMs(mkResp([0, 1, 0x38, 0x80])), 300000, 'an above-cap TTL (80000s) clamps down to the 5min maximum');
+	// CHANGED (was: falls back to the 30s floor). "I could not read the TTL" now means DO NOT CACHE rather
+	// than "hold it for 30 seconds", which was the opposite of fail-safe.
+	assert.equal(dnsAnswerMinTtlMs(new Uint8Array([0, 0, 0x81, 0x80, 0, 1])), null, 'an unreadable TTL returns null so the caller skips caching');
+	// RFC 1035: a TTL-0 answer (well-formed, distinct from unreadable) must NOT be cached -> 0.
+	assert.equal(dnsAnswerMinTtlMs(mkResp([0, 0, 0, 0])), 0, 'a TTL-0 answer returns 0 (do not cache)');
+	// A legal owner name that mixes labels with a compression pointer ("www" + ptr) used to trip the old
+	// hand-rolled walker and silently take the 30s fallback; the shared walker parses it.
+	{
+		const mixed = new Uint8Array([
+			0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0,
+			3, 0x66, 0x6f, 0x6f, 3, 0x63, 0x6f, 0x6d, 0, 0, 1, 0, 1,   // question foo.com A IN
+			3, 0x77, 0x77, 0x77, 0xc0, 0x0c,                            // answer name: "www" + ptr -> foo.com
+			0, 1, 0, 1, 0, 0, 0, 5, 0, 4, 1, 2, 3, 4,                   // A IN TTL=5 rdlen=4
+		]);
+		assert.equal(dnsAnswerMinTtlMs(mixed), 5000, 'a label+pointer owner name parses to its real 5s TTL');
+	}
+}
+
+{
+	// Tunneled DNS wire cache: a repeated identical query (>=12 bytes, single-question) is served from
+	// cache with NO second DoH subrequest — keyed on the query minus its 2-byte transaction ID, and only
+	// positive answers (NOERROR + >=1 answer) are cached.
+	const originalFetch = globalThis.fetch;
+	let dohCalls = 0;
+	// A real resolver echoes the question section it was asked (QDCOUNT=1 means one question record follows
+	// the header). The worker now verifies that correspondence before caching, so this fixture carries the
+	// question — the earlier one declared QDCOUNT=1 but jumped straight to the answer, which no resolver does.
+	const dnsResponse = new Uint8Array([
+		0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // header: QR RD RA, QD=1, AN=1
+		0x00, 0x00, 0x01, 0x00, 0x01,                                           // question: root, A, IN
+		0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04, // answer
+	]);
+	globalThis.fetch = async () => { dohCalls++; return new Response(dnsResponse, { status: 200, headers: { 'Content-Type': 'application/dns-message' } }); };
+	const query = [0xab, 0xcd, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]; // 17-byte single-question query
+	const frame = new Uint8Array([0x00, query.length, ...query]);
+	const sent = [];
+	const webSocket = { readyState: WebSocket.OPEN, send(p) { sent.push(new Uint8Array(p)); } };
+	const request = { env: {}, fetcher: { connect() { throw new Error('TCP should not be used when DoH succeeds'); } } };
+	try {
+		await withTestTimeout(forwardataudp(frame, webSocket, new Uint8Array([0, 0]), request), 80, 'DNS wire cache: first query (miss)');
+		assert.equal(dohCalls, 1, 'first query makes exactly one DoH request');
+		await withTestTimeout(forwardataudp(frame, webSocket, new Uint8Array([0, 0]), request), 80, 'DNS wire cache: repeat query (hit)');
+		assert.equal(dohCalls, 1, 'identical repeat query is served from the wire cache with NO extra DoH subrequest');
+		assert.equal(sent.length, 2, 'both queries delivered a response to the client');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
+{
+	assert.equal(getDohLookupUrl({}), 'https://cloudflare-dns.com/dns-query');
+	assert.equal(getDohLookupUrl({ DOH_URL: 'https://dns.google/dns-query' }), 'https://dns.google/dns-query');
+	assert.equal(getDohLookupUrl({ DOH_URL: 'ftp://invalid.example/dns-query' }), 'https://cloudflare-dns.com/dns-query');
+	assert.deepEqual(getDnsTcpEndpoint({ DNS_SERVER: '1.0.0.1' }), { hostname: '1.0.0.1', port: 53 });
+	assert.deepEqual(getDnsTcpEndpoint({ DNS_SERVER: 'tcp://9.9.9.9:9953' }), { hostname: '9.9.9.9', port: 9953 });
+	assert.deepEqual(getDnsTcpEndpoint({ DNS_SERVER: '[2606:4700:4700::1111]:53' }), { hostname: '2606:4700:4700::1111', port: 53 });
+	assert.deepEqual(getDnsTcpEndpoint({ DNS_SERVER: 'bad host name' }), { hostname: '8.8.4.4', port: 53 });
+}
+
+{
+	let canceled = false;
+	const socket = makeHangingProxySocket({ readableCancel: () => { canceled = true; } });
+	await assert.rejects(
+		withTestTimeout(socks5Connect('target.example', 443, null, () => socket, { hostname: 'proxy.example', port: 1080, timeoutMs: 400 }), 1_000, 'SOCKS5 handshake timeout'),
+		/SOCKS5 proxy handshake timed out/
+	);
+	assert.equal(socket.closedFlag, true, 'SOCKS5 timeout should close the proxy socket');
+	assert.equal(canceled, true, 'SOCKS5 timeout should cancel the pending read');
+}
+
+{
+	const writes = [];
+	let closed = false;
+	const chunks = [
+		new Uint8Array([0x05]),
+		new Uint8Array([0x00]),
+		new Uint8Array([0x05]),
+		new Uint8Array([0x00, 0x00, 0x01]),
+		new Uint8Array([127, 0, 0, 1, 0x04, 0x38]),
+	];
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(chunk);
+			},
+		}),
+		writable: new WritableStream({
+			write(chunk) {
+				writes.push(new Uint8Array(chunk));
+			},
+		}),
+		closed: new Promise(() => {}),
+		close() {
+			closed = true;
+		},
+	};
+	const result = await withTestTimeout(
+		socks5Connect('target.example', 443, new Uint8Array([0xaa, 0xbb]), () => socket, { hostname: 'proxy.example', port: 1080, timeoutMs: 400 }),
+		1_000,
+		'SOCKS5 split handshake'
+	);
+	assert.equal(result, socket);
+	assert.equal(closed, false, 'valid split SOCKS5 handshake should not close the socket');
+	assert.deepEqual(writes[0], new Uint8Array([0x05, 0x01, 0x00]));
+	assert.deepEqual(writes[1], new Uint8Array([0x05, 0x01, 0x00, 0x03, 14, 116, 97, 114, 103, 101, 116, 46, 101, 120, 97, 109, 112, 108, 101, 0x01, 0xbb]));
+	assert.deepEqual(writes[2], new Uint8Array([0xaa, 0xbb]));
+}
+
+{
+	let canceled = false;
+	const socket = makeHangingProxySocket({ readableCancel: () => { canceled = true; } });
+	await assert.rejects(
+		withTestTimeout(httpConnect('target.example', 443, null, false, () => socket, { hostname: 'proxy.example', port: 8080, timeoutMs: 400 }), 1_000, 'HTTP CONNECT timeout'),
+		/HTTP proxy CONNECT response timed out/
+	);
+	assert.equal(socket.closedFlag, true, 'HTTP timeout should close the proxy socket');
+	assert.equal(canceled, true, 'HTTP timeout should cancel the pending read');
+}
+
+{
+	const socket = makeHangingProxySocket({ opened: new Promise(() => {}) });
+	await assert.rejects(
+		withTestTimeout(httpsConnect('target.example', 443, null, () => socket, { hostname: 'proxy.example', port: 8443, timeoutMs: 400 }), 1_000, 'HTTPS proxy TCP timeout'),
+		/HTTPS proxy TCP connect timed out/
+	);
+	assert.equal(socket.closedFlag, true, 'HTTPS timeout should close the proxy socket');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	let upstreamClosed = false;
+	let requestBodyCanceled = false;
+	const upstreamWrites = [];
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({}),
+		writable: new WritableStream({
+			write(chunk) {
+				upstreamWrites.push(new Uint8Array(chunk));
+			},
+		}),
+		closed: new Promise(() => {}),
+		close() {
+			upstreamClosed = true;
+		},
+	};
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, 'target.example', 443, new Uint8Array([0xaa]))));
+		},
+		cancel() {
+			requestBodyCanceled = true;
+		},
+	});
+	const response = await handleGrpcRequest({
+		body,
+		cf: {},
+		headers: { get: () => null },
+		fetcher: { connect: () => socket },
+	}, uuid);
+	const reader = response.body.getReader();
+	await waitForCondition(() => upstreamWrites.length > 0, 300, 'gRPC upstream connection should receive first payload');
+	await reader.cancel();
+	assert.equal(upstreamClosed, true, 'gRPC response cancellation should close upstream socket');
+	assert.equal(requestBodyCanceled, true, 'gRPC response cancellation should cancel request body reads');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	let upstreamClosed = false;
+	let requestBodyCanceled = false;
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([0xbb]));
+				controller.close();
+			},
+		}),
+		writable: new WritableStream(),
+		closed: Promise.resolve(),
+		close() {
+			upstreamClosed = true;
+		},
+	};
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, 'target.example', 443, new Uint8Array([0xaa]))));
+		},
+		cancel() {
+			requestBodyCanceled = true;
+		},
+	});
+	const response = await handleGrpcRequest({
+		body,
+		cf: {},
+		headers: { get: () => null },
+		fetcher: { connect: () => socket },
+	}, uuid);
+	const bytes = await collectReadableStream(response.body);
+	const parsed = parseGrpcFrameChunk(new Uint8Array(0), bytes);
+	assert.deepEqual(parsed.payloads.map(payload => [...payload]), [[0, 0], [0xbb]]);
+	await waitForCondition(() => requestBodyCanceled, 300, 'gRPC upstream EOF should cancel open request body');
+	assert.equal(upstreamClosed, true, 'gRPC upstream EOF should close upstream socket');
+}
+
+{
+	// Opt-in gRPC duplex half-close (GRPC_HALF_CLOSE_ON_EOF=1): a response that arrives AFTER the client's
+	// request-body EOF must still be delivered, not truncated. The mock origin sends its late reply [7,8,9]
+	// only once it receives the upstream FIN (writable.close()) — which happens ONLY on the half-close path;
+	// a full socket.close() (the default teardown) ends the readable with no reply.
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const clientHello = new Uint8Array([0x16, 0x03, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x04, 0xaa, 0xbb, 0xcc, 0xdd]);
+	const makeRemote = () => {
+		let rc = null;
+		return {
+			opened: Promise.resolve(),
+			readable: new ReadableStream({ start(c) { rc = c; } }),
+			writable: new WritableStream({ write() { }, close() { try { rc?.enqueue(new Uint8Array([7, 8, 9])); rc?.close(); } catch (e) { } } }),
+			closed: new Promise(() => { }),
+			close() { try { rc?.close() } catch (e) { } }, // full close ends the readable with no late reply
+		};
+	};
+	const makeBody = () => new ReadableStream({
+		start(controller) {
+			controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, 'target.example', 443, clientHello)));
+			controller.close(); // request body EOFs right after the first frame
+		},
+	});
+	const contains789 = (bytes) => {
+		for (let i = 0; i + 2 < bytes.byteLength; i++) if (bytes[i] === 7 && bytes[i + 1] === 8 && bytes[i + 2] === 9) return true;
+		return false;
+	};
+
+	const onResp = await handleGrpcRequest({ body: makeBody(), env: { GRPC_HALF_CLOSE_ON_EOF: '1' }, cf: {}, headers: { get: () => null }, fetcher: { connect: () => makeRemote() } }, uuid);
+	assert.equal(contains789(await collectReadableStream(onResp.body, 2000)), true, 'GRPC_HALF_CLOSE_ON_EOF=1 delivers a response that arrives after request-body EOF');
+
+	const offResp = await handleGrpcRequest({ body: makeBody(), env: {}, cf: {}, headers: { get: () => null }, fetcher: { connect: () => makeRemote() } }, uuid);
+	assert.equal(contains789(await collectReadableStream(offResp.body, 2000)), false, 'default (flag off) closes on request-body EOF — the late response is not delivered (proven-working behavior)');
+}
+
+{
+	// Protocol detection: a first packet whose bytes 56-57 coincidentally equal CRLF must still be routed
+	// by UUID authentication (not misclassified and rejected by the CRLF heuristic). Host 't' => 24-byte
+	// header, so absolute offset 56 is rawData[32]; place CRLF there. It must still connect to the target.
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const rawData = new Uint8Array(40);
+	rawData[19] = 0x0d; rawData[20] = 0x0a; // 'target.example' => 37-byte header; abs offset 56 = rawData[19]
+	let connectedHost = null;
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({ start(c) { c.enqueue(new Uint8Array([0xbb])); c.close(); } }),
+		writable: new WritableStream({ write() { } }),
+		closed: Promise.resolve(),
+		close() { },
+	};
+	const body = new ReadableStream({ start(controller) { controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, 'target.example', 443, rawData))); controller.close(); } });
+	const response = await handleGrpcRequest({ body, env: {}, cf: {}, headers: { get: () => null }, fetcher: { connect(addr) { connectedHost = addr.hostname; return socket; } } }, uuid);
+	await collectReadableStream(response.body, 1500);
+	assert.equal(connectedHost, 'target.example', 'a first packet with CRLF at bytes 56-57 is authenticated by UUID and connects to the target (not misrouted by the CRLF heuristic)');
+}
+
+{
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	let requestBodyCanceled = false;
+	const socket = {
+		opened: Promise.resolve(),
+		readable: new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array([0xcc]));
+				controller.close();
+			},
+		}),
+		writable: new WritableStream(),
+		closed: Promise.resolve(),
+		close() {},
+	};
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(makeVlessTcpRequest(uuid, 'target.example', 443, new Uint8Array([0xaa])));
+		},
+		cancel() {
+			requestBodyCanceled = true;
+		},
+	});
+	const response = await workerModule.default.fetch({
+		url: 'https://worker.example/tunnel',
+		method: 'POST',
+		headers: { get: () => null },
+		body,
+		cf: {},
+		fetcher: { connect: () => socket },
+	}, { ADMIN: 'admin-password', UUID: uuid }, { waitUntil() {} });
+
+	const bytes = await collectReadableStream(response.body);
+	assert.deepEqual([...bytes], [0, 0, 0xcc]);
+	await waitForCondition(() => requestBodyCanceled, 300, 'XHTTP upstream EOF should cancel open request body');
+}
+
+{
+	// Direct-route-failed cache: after the direct dial yields no data twice for the same host+colo,
+	// the third connection skips the wasted direct attempt and goes straight to ProxyIP.
+	const uuid = '11111111-1111-4111-8111-111111111111';
+	const targetHost = 'routecache.example';
+	const proxyIp = '198.51.100.10';
+	const makeNoDataDirectSocket = () => ({
+		opened: Promise.resolve(),
+		readable: new ReadableStream({ start(controller) { controller.close(); } }),
+		writable: new WritableStream({ write() {} }),
+		closed: new Promise(() => {}),
+		close() {},
+	});
+	const makeProxySocket = () => ({
+		opened: Promise.resolve(),
+		readable: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([0x48, 0x54, 0x54, 0x50])); controller.close(); } }),
+		writable: new WritableStream({ write() {} }),
+		closed: new Promise(() => {}),
+		close() {},
+	});
+	const runOnce = async () => {
+		const connectCalls = [];
+		const tunnel = await createTunnelContext(fakeRequest(), { PROXYIP: `${proxyIp}:443`, PRELOAD_RACE_DIAL: '0' });
+		const body = new ReadableStream({
+			start(controller) {
+				// First packet is a standalone TLS ClientHello (0x16 0x03 0x01 … type 0x01) — replay-safe, so the
+				// direct→ProxyIP fallback is allowed to replay it (the censorship-recovery path).
+				controller.enqueue(encodeGrpcDataFrame(makeVlessTcpRequest(uuid, targetHost, 443, new Uint8Array([0x16, 0x03, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x04, 0xaa, 0xbb, 0xcc, 0xdd]))));
+				controller.close();
+			},
+		});
+		const response = await handleGrpcRequest({
+			body,
+			env: { CONNECT_TIMEOUT_MS: '400' },
+			tunnel,
+			cf: {},
+			headers: { get: () => null },
+			fetcher: {
+				connect(address) {
+					connectCalls.push(address.hostname);
+					return address.hostname === targetHost ? makeNoDataDirectSocket() : makeProxySocket();
+				},
+			},
+		}, uuid);
+		await collectReadableStream(response.body, 2_000);
+		return connectCalls;
+	};
+	const call1 = await runOnce();
+	const call2 = await runOnce();
+	const call3 = await runOnce();
+	assert.equal(call1.includes(targetHost), true, 'route-cache: 1st connection should still try direct');
+	assert.equal(call1.includes(proxyIp), true, 'route-cache: 1st connection should fall back to ProxyIP on no data');
+	assert.equal(call2.includes(targetHost), true, 'route-cache: 2nd connection should still try direct (threshold not yet reached)');
+	assert.equal(call3.includes(targetHost), false, 'route-cache: 3rd connection should SKIP direct after two failures');
+	assert.equal(call3.includes(proxyIp), true, 'route-cache: 3rd connection should go straight to ProxyIP');
+}
+
+console.log('tunnel behavior tests passed');
